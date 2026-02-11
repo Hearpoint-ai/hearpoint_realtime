@@ -27,7 +27,7 @@ pip install sounddevice numpy torch soundfile resampy pyyaml
 ### 1. List Available Audio Devices
 
 ```bash
-cd backend/test_realtime
+cd src/realtime
 python realtime_inference.py --list-devices
 ```
 
@@ -61,6 +61,18 @@ To validate the streaming inference without a live microphone:
 python realtime_inference.py --test-file input.wav
 ```
 
+## CLI Options
+
+| Flag | Description |
+|------|-------------|
+| `--embedding`, `-e` | Path to speaker embedding `.npy` file (overrides config.yaml) |
+| `--checkpoint`, `-c` | Path to model checkpoint |
+| `--model-config` | Path to model config JSON |
+| `--device` | Torch device (`cpu`, `cuda`, `mps`). Auto-detected if not specified |
+| `--list-devices` | List available audio devices and exit |
+| `--test-file` | Process a pre-recorded file instead of live audio |
+| `--output-file` | Output file path (used with `--test-file`) |
+
 ## Configuration
 
 All runtime parameters are configured via `config.yaml`. See the file for detailed documentation of each option.
@@ -68,8 +80,7 @@ All runtime parameters are configured via `config.yaml`. See the file for detail
 | Section | Parameters |
 |---------|------------|
 | `embedding` | Path to speaker embedding .npy file (required) |
-| `audio` | sample_rate, chunk_size, input/output devices, channels, buffer_size |
-| `hrtf` | Enable binaural synthesis with Head-Related Transfer Functions |
+| `audio` | sample_rate, chunk_size, input/output devices, channels, buffer_size_chunks |
 | `debug` | Verbose logging, passthrough mode, debug file saving |
 
 ## How It Works
@@ -98,10 +109,11 @@ All runtime parameters are configured via `config.yaml`. See the file for detail
 
 1. **Audio Capture**: Microphone audio is captured in chunks and placed in an input queue
 2. **Mono-to-Stereo**: Mono input is duplicated to create a 2-channel signal (required by the model)
-3. **STFT Encoding**: Audio is converted to time-frequency representation
-4. **GridNet Processing**: Neural network processes the spectrogram with speaker embedding conditioning
-5. **iSTFT Decoding**: Frequency domain output is converted back to time domain
-6. **Stereo Output**: Enhanced audio is sent to the output queue and played through headphones
+3. **Lookahead Accumulation**: Input samples are accumulated until a full chunk plus lookahead (stft_pad_size) is available
+4. **STFT Encoding**: Audio is converted to time-frequency representation
+5. **GridNet Processing**: Neural network processes the spectrogram with speaker embedding conditioning
+6. **iSTFT Decoding**: Frequency domain output is converted back to time domain
+7. **Stereo Output**: Enhanced audio is sent to the output queue and played through headphones
 
 ### Streaming State Management
 
@@ -161,40 +173,21 @@ The script reports RTF (Real-Time Factor) during processing:
 
 ## Creating Speaker Embeddings
 
-Speaker embeddings are required to tell the model whose voice to extract. You can create them using the existing enrollment system:
+Speaker embeddings are required to tell the model whose voice to extract. Use the enrollment script:
 
-### Option 1: Using the Backend API
-
-If the FastAPI server is running:
-
-```python
-import requests
-
-# Upload enrollment audio
-with open("enrollment_audio.wav", "rb") as f:
-    response = requests.post(
-        "http://localhost:8000/enroll",
-        files={"audio": f},
-        data={"speaker_name": "John"}
-    )
-
-# The embedding will be saved and can be found in the response
-embedding_path = response.json()["embedding_path"]
+```bash
+python scripts/enroll.py --name "Alice" --audio /path/to/recording.wav
+python scripts/enroll.py --name "Alice" --record --duration 5
 ```
 
-### Option 2: Direct Embedding Extraction
+Or compute one directly in Python:
 
 ```python
 import numpy as np
-from app.ml.TFGridNetSpeakerEmbeddingModel import TFGridNetSpeakerEmbeddingModel
+from src.ml.TFGridNetSpeakerEmbeddingModel import TFGridNetSpeakerEmbeddingModel
 
-# Load model
 model = TFGridNetSpeakerEmbeddingModel()
-
-# Compute embedding from audio file
 embedding = model.compute_embedding("enrollment_audio.wav")
-
-# Save embedding
 np.save("speaker_embedding.npy", embedding)
 ```
 
@@ -223,7 +216,7 @@ python realtime_inference.py --list-devices
 
 Ensure you're running from the correct directory:
 ```bash
-cd backend/test_realtime
+cd src/realtime
 python realtime_inference.py --help
 ```
 
@@ -241,8 +234,8 @@ debug:
 ```
 
 **Expected results:**
-- You hear your voice clearly → Audio I/O is working, problem is in the model
-- Still static/no audio → Problem is in audio device configuration
+- You hear your voice clearly: Audio I/O is working, problem is in the model
+- Still static/no audio: Problem is in audio device configuration
 
 ### Step 2: Enable Debug Logging
 
@@ -259,10 +252,10 @@ This prints for each chunk:
 - Queue sizes (input/output/accumulator)
 
 **What to look for:**
-- Input values near zero → Microphone not capturing
-- Output contains NaN → Model producing invalid values
-- Output min/max are extreme (e.g., >1000) → Model producing garbage
-- Queue sizes growing unbounded → Processing too slow
+- Input values near zero: Microphone not capturing
+- Output contains NaN: Model producing invalid values
+- Output min/max are extreme (e.g., >1000): Model producing garbage
+- Queue sizes growing unbounded: Processing too slow
 
 ### Step 3: Save Debug Audio Files
 
@@ -309,11 +302,11 @@ If the level stays at `-60 dB` while speaking, the microphone isn't capturing au
 ## File Structure
 
 ```
-test_realtime/
+realtime/
 ├── README.md              # This documentation
 ├── config.yaml            # Configuration file
 ├── realtime_inference.py  # Main real-time inference script
-└── __init__.py           # Package marker
+└── __init__.py            # Package marker
 ```
 
 ## Technical Details

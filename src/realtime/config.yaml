@@ -1,11 +1,11 @@
 # Real-time TFGridNet Inference Configuration
-# Copy this file and modify as needed for your setup.
 
 # =============================================================================
 # SPEAKER EMBEDDING
 # =============================================================================
 # Path to speaker embedding .npy file (required)
-embedding: /Users/himanshu/Documents/Github/Capstone/proof-of-concept/backend/media/enrollments/b39b37a1-cd5d-43c2-a413-96271ee69b5b.npy  # e.g., "/path/to/speaker_embedding.npy"
+# e.g., "/path/to/speaker_embedding.npy"
+embedding: /Users/himanshu/Documents/Github/Capstone/hearpoint_realtime/media/enrollments/63400403-12da-4aa8-894e-615f29a78dd3.npy  
 
 # =============================================================================
 # AUDIO CONFIGURATION
@@ -33,21 +33,6 @@ audio:
   # Number of chunks to buffer for input (higher = more stable, more latency)
   buffer_size_chunks: 4
 
-  # Crossfade samples for smoothing chunk boundaries (reduces buzzing artifacts)
-  # 16 = ~1ms at 16kHz, try 32 or 64 if buzzing persists
-  crossfade_samples: 0
-
-# =============================================================================
-# HRTF CONFIGURATION (Head-Related Transfer Function)
-# =============================================================================
-hrtf:
-  # Enable HRTF processing for binaural synthesis
-  enabled: false
-
-  # Paths to HRTF impulse response files (only used if enabled=true)
-  # Leave as null to use default paths
-  left_path: null   # defaults to backend/data/hrtf/cipic_left.wav
-  right_path: null  # defaults to backend/data/hrtf/cipic_right.wav
 
 # =============================================================================
 # DEBUG OPTIONS

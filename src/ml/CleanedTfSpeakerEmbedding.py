@@ -1,5 +1,5 @@
 ##################################################
-#### This file is simply a cleaned up version of backend/app/ml/TFGridNetSpeakerEmbeddingModel.py
+#### This file is simply a cleaned up version of src/ml/TFGridNetSpeakerEmbeddingModel.py
 #### For some reason (likely the mono, binaural randomness), this cleaned up version works worse than the original #####
 #### The original has a lot of random binaural --> mono --> binaural arbitrary conversions that I will prob need to spend some more time on later 
 ##################################################

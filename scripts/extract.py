@@ -42,7 +42,7 @@ def main():
             f"Audio must be binaural (2-channel), got {info.channels} channel(s)."
         )
 
-    from app.persistence import MediaJsonStore
+    from src.persistence import MediaJsonStore
 
     store = MediaJsonStore(media_root=MEDIA_DIR, data_file=DATA_FILE)
     speakers, _recordings, _extractions = store.load()
@@ -61,8 +61,8 @@ def main():
 
     embedding_paths = [s.embedding_path for s in found_speakers]
 
-    from app.ml.TFGridNetExtractionModel import TFGridNetExtractionModel
-    from app.utils import sanitize_for_filename
+    from src.ml.TFGridNetExtractionModel import TFGridNetExtractionModel
+    from src.utils import sanitize_for_filename
 
     model = TFGridNetExtractionModel()
 

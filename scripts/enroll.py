@@ -102,7 +102,7 @@ def main():
         )
 
     # Compute embedding
-    from app.ml.TFGridNetSpeakerEmbeddingModel import TFGridNetSpeakerEmbeddingModel
+    from src.ml.TFGridNetSpeakerEmbeddingModel import TFGridNetSpeakerEmbeddingModel
 
     t0 = time.perf_counter()
     model = TFGridNetSpeakerEmbeddingModel()
@@ -114,8 +114,8 @@ def main():
     np.save(dest_embedding, embedding)
 
     # Update data.json
-    from app.models import Speaker
-    from app.persistence import MediaJsonStore
+    from src.models import Speaker
+    from src.persistence import MediaJsonStore
 
     store = MediaJsonStore(media_root=MEDIA_DIR, data_file=DATA_FILE)
     speakers, recordings, extractions = store.load()

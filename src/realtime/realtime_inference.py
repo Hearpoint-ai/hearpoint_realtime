@@ -26,23 +26,21 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 import torch
-import resampy
 import yaml
 
-# Add parent directory to path for imports
+# Add repo root to path for imports (so `from src.xxx` resolves)
 SCRIPT_DIR = Path(__file__).resolve().parent
-BACKEND_DIR = SCRIPT_DIR.parent
-sys.path.insert(0, str(BACKEND_DIR))
+REPO_ROOT = SCRIPT_DIR.parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 
-from app.models.tfgridnet_realtime.net import Net
-from app.utils import get_torch_device
+from src.models.tfgridnet_realtime.net import Net
+from src.utils import get_torch_device
 
 
 # Default paths
-DEFAULT_CONFIG_PATH = BACKEND_DIR / "configs" / "tfgridnet_cipic.json"
-DEFAULT_CHECKPOINT_PATH = BACKEND_DIR / "weights" / "tfgridnet.ckpt"
-DEFAULT_HRTF_LEFT_PATH = BACKEND_DIR / "data" / "hrtf" / "cipic_left.wav"
-DEFAULT_HRTF_RIGHT_PATH = BACKEND_DIR / "data" / "hrtf" / "cipic_right.wav"
+SRC_DIR = REPO_ROOT / "src"
+DEFAULT_CONFIG_PATH = SRC_DIR / "configs" / "tfgridnet_cipic.json"
+DEFAULT_CHECKPOINT_PATH = REPO_ROOT / "weights" / "tfgridnet.ckpt"
 DEFAULT_YAML_CONFIG_PATH = SCRIPT_DIR / "config.yaml"
 
 # Audio parameters (defaults, can be overridden by config)
@@ -69,15 +67,6 @@ class AudioConfig:
     input_channels: int = 2
     output_channels: int | None = 2
     buffer_size_chunks: int = 4
-    crossfade_samples: int = 16  # ~1ms at 16kHz for smoothing chunk boundaries
-
-
-@dataclass
-class HRTFConfig:
-    """HRTF-related configuration."""
-    enabled: bool = False
-    left_path: Path | None = None
-    right_path: Path | None = None
 
 
 @dataclass
@@ -107,7 +96,6 @@ class Config:
     """Complete configuration for real-time inference."""
     model: ModelConfig = field(default_factory=ModelConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
-    hrtf: HRTFConfig = field(default_factory=HRTFConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
     test: TestConfig = field(default_factory=TestConfig)
 
@@ -129,7 +117,6 @@ class Config:
             return Path(val) if val else None
 
         audio_data = data.get("audio", {}) or {}
-        hrtf_data = data.get("hrtf", {}) or {}
         debug_data = data.get("debug", {}) or {}
 
         # Load embedding path from top-level config
@@ -145,12 +132,6 @@ class Config:
                 input_channels=audio_data.get("input_channels", 2),
                 output_channels=audio_data.get("output_channels", 2),
                 buffer_size_chunks=audio_data.get("buffer_size_chunks", 4),
-                crossfade_samples=audio_data.get("crossfade_samples", 16),
-            ),
-            hrtf=HRTFConfig(
-                enabled=hrtf_data.get("enabled", False),
-                left_path=to_path(hrtf_data.get("left_path")),
-                right_path=to_path(hrtf_data.get("right_path")),
             ),
             debug=DebugConfig(
                 verbose=debug_data.get("verbose", False),
@@ -167,15 +148,6 @@ class Config:
     def get_model_config_path(self) -> Path:
         """Get model config path with default fallback."""
         return self.model.config or DEFAULT_CONFIG_PATH
-
-    def get_hrtf_left_path(self) -> Path:
-        """Get HRTF left path with default fallback."""
-        return self.hrtf.left_path or DEFAULT_HRTF_LEFT_PATH
-
-    def get_hrtf_right_path(self) -> Path:
-        """Get HRTF right path with default fallback."""
-        return self.hrtf.right_path or DEFAULT_HRTF_RIGHT_PATH
-
 
 class RealtimeInference:
     """Real-time TFGridNet inference engine."""
@@ -209,22 +181,6 @@ class RealtimeInference:
             self.save_debug_dir.mkdir(parents=True, exist_ok=True)
             self.debug_inputs = []
             self.debug_outputs = []
-
-        # Load HRTFs for mono-to-binaural conversion
-        self.hrtf_left = None
-        self.hrtf_right = None
-        self.hrtf_conv_buffer = None
-        self.use_hrtf = config.hrtf.enabled
-        if self.use_hrtf:
-            hrtf_left_path = config.get_hrtf_left_path()
-            hrtf_right_path = config.get_hrtf_right_path()
-            if hrtf_left_path.exists() and hrtf_right_path.exists():
-                self._load_hrtfs(hrtf_left_path, hrtf_right_path)
-            else:
-                print(f"Warning: HRTF files not found, disabling HRTF processing")
-                self.use_hrtf = False
-        if not self.use_hrtf:
-            print("HRTF disabled - using simple channel duplication")
 
         # Threading control
         self.running = False
@@ -260,10 +216,6 @@ class RealtimeInference:
 
         # Input accumulator for collecting enough samples before processing
         self.input_accumulator = np.zeros(0, dtype=np.float32)
-
-        # Crossfade buffer for smoothing chunk boundaries
-        self.crossfade_samples = config.audio.crossfade_samples
-        self.prev_output_tail = None  # Will store last crossfade_samples of previous output
 
         # Statistics
         self.chunks_processed = 0
@@ -334,75 +286,6 @@ class RealtimeInference:
             print(f"Warning: Could not detect output channels ({e}), defaulting to 1")
             return 1
 
-    def _load_hrtfs(self, left_path: Path, right_path: Path) -> None:
-        """Load HRTF impulse responses for binaural synthesis."""
-        def load_hrtf(path: Path) -> np.ndarray:
-            path = Path(path)
-            if not path.exists():
-                raise FileNotFoundError(f"HRTF file not found: {path}")
-            if path.suffix.lower() == ".npy":
-                data = np.load(path)
-                sr = self.sample_rate
-            else:
-                data, sr = sf.read(str(path))
-            if data.ndim > 1:
-                data = data[:, 0]
-            # Resample if needed
-            if sr != self.sample_rate:
-                data = resampy.resample(data, sr, self.sample_rate)
-            return data.astype(np.float32)
-
-        self.hrtf_left = load_hrtf(left_path)
-        self.hrtf_right = load_hrtf(right_path)
-
-        # Initialize convolution buffer (overlap-save method)
-        # Buffer length = max HRTF length - 1
-        max_hrtf_len = max(len(self.hrtf_left), len(self.hrtf_right))
-        self.hrtf_conv_buffer = np.zeros(max_hrtf_len - 1, dtype=np.float32)
-
-        print(f"Loaded HRTFs: left={len(self.hrtf_left)} samples, right={len(self.hrtf_right)} samples")
-
-    def _apply_hrtf_streaming(self, mono_chunk: np.ndarray) -> np.ndarray:
-        """
-        Apply HRTF convolution to mono chunk using overlap-save for streaming.
-
-        Returns: [2, chunk_size] binaural audio
-        """
-        if self.hrtf_left is None or self.hrtf_right is None:
-            # Fallback to simple duplication
-            return np.stack([mono_chunk, mono_chunk], axis=0)
-
-        # Prepend buffer from previous chunk for continuous convolution
-        extended = np.concatenate([self.hrtf_conv_buffer, mono_chunk])
-
-        # Convolve with both HRTFs
-        left_full = np.convolve(extended, self.hrtf_left, mode='full')
-        right_full = np.convolve(extended, self.hrtf_right, mode='full')
-
-        # Extract the valid portion (skip transient, take chunk_size samples)
-        # For overlap-save: valid output starts at (hrtf_len - 1) and has length = chunk_size
-        buf_len = len(self.hrtf_conv_buffer)
-        left_out = left_full[buf_len:buf_len + len(mono_chunk)]
-        right_out = right_full[buf_len:buf_len + len(mono_chunk)]
-
-        # Update buffer with the tail of the current chunk
-        self.hrtf_conv_buffer = mono_chunk[-buf_len:].copy() if buf_len > 0 else np.array([])
-
-        return np.stack([left_out, right_out], axis=0).astype(np.float32)
-
-    def _mono_to_stereo(self, mono: np.ndarray) -> np.ndarray:
-        """Convert mono audio to binaural stereo using HRTF or simple duplication."""
-        # Input: [samples] or [samples, 1]
-        if mono.ndim > 1:
-            mono = mono.squeeze()
-
-        # Use HRTF convolution if available for proper binaural synthesis
-        if self.hrtf_left is not None and self.hrtf_right is not None:
-            return self._apply_hrtf_streaming(mono)
-
-        # Fallback: Output: [2, samples] (channels first for model)
-        return np.stack([mono, mono], axis=0)
-
     def _process_chunk(self, audio_chunk: np.ndarray, lookahead: np.ndarray | None = None) -> np.ndarray:
         """
         Process a single audio chunk through the model.
@@ -447,8 +330,8 @@ class RealtimeInference:
 
             return output_audio
 
-        # Convert mono to stereo [2, chunk_size]
-        stereo_input = self._mono_to_stereo(audio_chunk)
+        # Duplicate mono to stereo [2, chunk_size] (model expects binaural input)
+        stereo_input = np.stack([audio_chunk, audio_chunk], axis=0)
 
         # Convert to tensor [1, 2, chunk_size]
         input_tensor = torch.from_numpy(stereo_input).unsqueeze(0).to(self.device)
@@ -456,13 +339,7 @@ class RealtimeInference:
         # Prepare lookahead tensor if available (real audio instead of zero-padding)
         la_tensor = None
         if lookahead is not None and len(lookahead) > 0:
-            if self.use_hrtf and self.hrtf_left is not None:
-                # Save HRTF state -- lookahead must not permanently advance it
-                saved_hrtf_buf = self.hrtf_conv_buffer.copy()
-                stereo_la = self._apply_hrtf_streaming(lookahead)
-                self.hrtf_conv_buffer = saved_hrtf_buf
-            else:
-                stereo_la = np.stack([lookahead, lookahead], axis=0)
+            stereo_la = np.stack([lookahead, lookahead], axis=0)
             la_tensor = torch.from_numpy(stereo_la).unsqueeze(0).to(self.device)
 
         # Run inference with state caching
@@ -486,22 +363,6 @@ class RealtimeInference:
 
         output_audio = np.clip(output_audio, -1.0, 1.0)
         output_audio = output_audio.T  # [samples, 2]
-
-        # Apply crossfade to smooth chunk boundaries (skip if crossfade_samples is 0)
-        if self.crossfade_samples > 0:
-            if self.prev_output_tail is not None and len(output_audio) >= self.crossfade_samples:
-                # Create crossfade weights
-                fade_in = np.linspace(0, 1, self.crossfade_samples, dtype=np.float32).reshape(-1, 1)
-                fade_out = 1.0 - fade_in
-                # Blend the overlap region
-                output_audio[:self.crossfade_samples] = (
-                    fade_out * self.prev_output_tail +
-                    fade_in * output_audio[:self.crossfade_samples]
-                )
-
-            # Store tail for next chunk's crossfade
-            if len(output_audio) >= self.crossfade_samples:
-                self.prev_output_tail = output_audio[-self.crossfade_samples:].copy()
 
         # Convert to mono if needed
         if self.output_channels == 1:

@@ -1,4 +1,4 @@
-name: hearpoint-backend2
+name: hearpoint-realtime
 channels:
   - conda-forge
 dependencies:
