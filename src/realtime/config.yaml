@@ -1,0 +1,65 @@
+# Real-time TFGridNet Inference Configuration
+# Copy this file and modify as needed for your setup.
+
+# =============================================================================
+# SPEAKER EMBEDDING
+# =============================================================================
+# Path to speaker embedding .npy file (required)
+embedding: /Users/himanshu/Documents/Github/Capstone/proof-of-concept/backend/media/enrollments/b39b37a1-cd5d-43c2-a413-96271ee69b5b.npy  # e.g., "/path/to/speaker_embedding.npy"
+
+# =============================================================================
+# AUDIO CONFIGURATION
+# =============================================================================
+audio:
+  # Sample rate in Hz
+  sample_rate: 16000
+
+  # Chunk size in samples
+  chunk_size: 128
+
+  # Input device index (null for system default)
+  # Run with --list-devices to see available devices
+  input_device: null
+
+  # Output device index (null for system default)
+  output_device: null
+
+  # Number of input channels (1 for mono mic)
+  input_channels: 2
+
+  # Number of output channels (null for auto-detect, 1 for mono, 2 for stereo)
+  output_channels: 2
+
+  # Number of chunks to buffer for input (higher = more stable, more latency)
+  buffer_size_chunks: 4
+
+  # Crossfade samples for smoothing chunk boundaries (reduces buzzing artifacts)
+  # 16 = ~1ms at 16kHz, try 32 or 64 if buzzing persists
+  crossfade_samples: 0
+
+# =============================================================================
+# HRTF CONFIGURATION (Head-Related Transfer Function)
+# =============================================================================
+hrtf:
+  # Enable HRTF processing for binaural synthesis
+  enabled: false
+
+  # Paths to HRTF impulse response files (only used if enabled=true)
+  # Leave as null to use default paths
+  left_path: null   # defaults to backend/data/hrtf/cipic_left.wav
+  right_path: null  # defaults to backend/data/hrtf/cipic_right.wav
+
+# =============================================================================
+# DEBUG OPTIONS
+# =============================================================================
+debug:
+  # Enable verbose debug logging (prints input/output stats per chunk)
+  verbose: false
+
+  # Bypass the model entirely - pass audio through unchanged
+  # Useful for testing audio I/O pipeline
+  passthrough: false
+
+  # Directory to save debug audio files (debug_input.wav, debug_output.wav)
+  # Set to null to disable, or a path like "./debug_audio/"
+  save_dir: null

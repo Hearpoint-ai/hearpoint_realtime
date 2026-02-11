@@ -1,0 +1,23 @@
+name: hearpoint-backend2
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pytorch
+  - pysoundfile
+  - six
+  - pip:
+      - "skypilot[gcp,lambda]==0.10.5"
+      - "vastai-sdk>=0.1.12"
+      - asteroid-filterbanks
+      - fastapi
+      - plantuml
+      - python-multipart
+      - resampy
+      - resemblyzer
+      - uvicorn
+      - pysofaconventions
+      - "espnet[all]"
+      - sounddevice
