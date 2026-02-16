@@ -722,14 +722,8 @@ Examples:
   # List audio devices
   python realtime_inference.py --list-devices
 
-  # Run real-time inference (set embedding path in config.yaml)
+  # Run real-time inference (configure settings in config.yaml)
   python realtime_inference.py
-
-  # Override embedding path via CLI
-  python realtime_inference.py --embedding /path/to/speaker.npy
-
-  # Test with pre-recorded file
-  python realtime_inference.py --test-file input.wav
 
   # Use specific device
   python realtime_inference.py --device mps
@@ -737,12 +731,6 @@ Examples:
     )
 
     # Model arguments
-    parser.add_argument(
-        "--embedding", "-e",
-        type=Path,
-        default=None,
-        help="Path to speaker embedding .npy file (overrides config.yaml)"
-    )
     parser.add_argument(
         "--checkpoint", "-c",
         type=Path,
@@ -769,20 +757,6 @@ Examples:
         help="List available audio devices and exit"
     )
 
-    # Test mode arguments
-    parser.add_argument(
-        "--test-file",
-        type=Path,
-        default=None,
-        help="Process a pre-recorded file instead of live audio (for validation)"
-    )
-    parser.add_argument(
-        "--output-file",
-        type=Path,
-        default=None,
-        help="Output file path (used with --test-file)"
-    )
-
     args = parser.parse_args()
 
     # Handle --list-devices first
@@ -802,28 +776,22 @@ Examples:
         config = Config()
 
     # Apply CLI arguments for model settings
-    if args.embedding is not None:
-        config.model.embedding = args.embedding
     if args.checkpoint is not None:
         config.model.checkpoint = args.checkpoint
     if args.model_config is not None:
         config.model.config = args.model_config
     if args.device is not None:
         config.model.device = args.device
-    if args.test_file is not None:
-        config.test.input_file = args.test_file
-    if args.output_file is not None:
-        config.test.output_file = args.output_file
 
     # Validate required fields
     if config.model.embedding is None and not config.debug.passthrough:
-        parser.error("embedding is required (set in config.yaml or use --embedding)")
+        parser.error("embedding is required (set in config.yaml)")
 
     # Determine mode: file-based test or real-time
-    if config.test.enabled or config.test.input_file:
+    if config.test.enabled:
         # File-based testing mode
         if config.test.input_file is None:
-            parser.error("test input_file is required when test mode is enabled (set in config.yaml or use --test-file)")
+            parser.error("test input_file is required when test mode is enabled (set in config.yaml)")
         if config.test.output_file is None:
             config.test.output_file = SCRIPT_DIR / (config.test.input_file.stem + ".enhanced.wav")
 
