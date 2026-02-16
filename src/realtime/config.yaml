@@ -5,7 +5,7 @@
 # =============================================================================
 # Path to speaker embedding .npy file (required)
 # e.g., "/path/to/speaker_embedding.npy"
-embedding: /Users/himanshu/Documents/Github/Capstone/hearpoint_realtime/media/enrollments/63400403-12da-4aa8-894e-615f29a78dd3.npy  
+embedding: media/enrollments/f75d8385-bedf-4082-babf-1825963c7e69.npy
 
 # =============================================================================
 # AUDIO CONFIGURATION
@@ -48,3 +48,17 @@ debug:
   # Directory to save debug audio files (debug_input.wav, debug_output.wav)
   # Set to null to disable, or a path like "./debug_audio/"
   save_dir: null
+
+
+# =============================================================================
+# FILE-BASED TEST MODE
+# =============================================================================
+test:
+  # Enable file-based test mode (process a file instead of live audio)
+  enabled: true
+
+  # Path to input audio file
+  input_file: media/mixtures/derron_mubashir.wav
+
+  # Path to output audio file (null = auto-generated from input filename)
+  output_file: null

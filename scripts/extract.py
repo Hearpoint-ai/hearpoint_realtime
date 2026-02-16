@@ -7,12 +7,14 @@ Usage:
 """
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
 import soundfile as sf
 
-BACKEND_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BACKEND_DIR))
 MEDIA_DIR = BACKEND_DIR / "media"
 DATA_FILE = MEDIA_DIR / "data.json"
 EXTRACTED_DIR = MEDIA_DIR / "extracted"

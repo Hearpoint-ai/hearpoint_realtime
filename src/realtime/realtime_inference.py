@@ -87,6 +87,7 @@ class OptimizationConfig:
 @dataclass
 class TestConfig:
     """File-based test configuration."""
+    enabled: bool = False
     input_file: Path | None = None
     output_file: Path | None = None
 
@@ -114,10 +115,16 @@ class Config:
     def _from_dict(cls, data: dict[str, Any]) -> "Config":
         """Create Config from a dictionary."""
         def to_path(val: Any) -> Path | None:
-            return Path(val) if val else None
+            if not val:
+                return None
+            p = Path(val)
+            if not p.is_absolute():
+                p = REPO_ROOT / p
+            return p
 
         audio_data = data.get("audio", {}) or {}
         debug_data = data.get("debug", {}) or {}
+        test_data = data.get("test", {}) or {}
 
         # Load embedding path from top-level config
         embedding_path = to_path(data.get("embedding"))
@@ -138,7 +145,11 @@ class Config:
                 passthrough=debug_data.get("passthrough", False),
                 save_dir=to_path(debug_data.get("save_dir")),
             ),
-            test=TestConfig(),
+            test=TestConfig(
+                enabled=test_data.get("enabled", False),
+                input_file=to_path(test_data.get("input_file")),
+                output_file=to_path(test_data.get("output_file")),
+            ),
         )
 
     def get_checkpoint_path(self) -> Path:
@@ -809,8 +820,10 @@ Examples:
         parser.error("embedding is required (set in config.yaml or use --embedding)")
 
     # Determine mode: file-based test or real-time
-    if config.test.input_file:
+    if config.test.enabled or config.test.input_file:
         # File-based testing mode
+        if config.test.input_file is None:
+            parser.error("test input_file is required when test mode is enabled (set in config.yaml or use --test-file)")
         if config.test.output_file is None:
             config.test.output_file = SCRIPT_DIR / (config.test.input_file.stem + ".enhanced.wav")
 
