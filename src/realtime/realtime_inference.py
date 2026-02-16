@@ -225,8 +225,8 @@ class RealtimeInference:
             self.state = self.model.init_buffers(batch_size=1, device=self.device)
             self.stft_pad_size = self.model.stft_pad_size
 
-        # Input accumulator for collecting enough samples before processing
-        self.input_accumulator = np.zeros(0, dtype=np.float32)
+        # Input accumulator for collecting enough samples before processing (stereo)
+        self.input_accumulator = np.zeros((0, 2), dtype=np.float32)
 
         # Statistics
         self.chunks_processed = 0
@@ -302,8 +302,8 @@ class RealtimeInference:
         Process a single audio chunk through the model.
 
         Args:
-            audio_chunk: Mono audio chunk [chunk_size]
-            lookahead: Optional mono lookahead samples [stft_pad_size] for real
+            audio_chunk: Stereo audio chunk [chunk_size, 2]
+            lookahead: Optional stereo lookahead samples [stft_pad_size, 2] for real
                        audio lookahead instead of zero-padding.
 
         Returns:
@@ -324,9 +324,9 @@ class RealtimeInference:
         # Passthrough mode: bypass model entirely
         if self.passthrough_mode:
             if self.output_channels == 1:
-                output_audio = audio_chunk.reshape(-1, 1)
+                output_audio = audio_chunk.mean(axis=1, keepdims=True)
             else:
-                output_audio = np.column_stack([audio_chunk, audio_chunk])
+                output_audio = audio_chunk
             elapsed = time.perf_counter() - start_time
             self.processing_times.append(elapsed)
             self.chunks_processed += 1
@@ -341,8 +341,8 @@ class RealtimeInference:
 
             return output_audio
 
-        # Duplicate mono to stereo [2, chunk_size] (model expects binaural input)
-        stereo_input = np.stack([audio_chunk, audio_chunk], axis=0)
+        # Transpose from [chunk_size, 2] to [2, chunk_size] for model
+        stereo_input = audio_chunk.T
 
         # Convert to tensor [1, 2, chunk_size]
         input_tensor = torch.from_numpy(stereo_input).unsqueeze(0).to(self.device)
@@ -350,7 +350,7 @@ class RealtimeInference:
         # Prepare lookahead tensor if available (real audio instead of zero-padding)
         la_tensor = None
         if lookahead is not None and len(lookahead) > 0:
-            stereo_la = np.stack([lookahead, lookahead], axis=0)
+            stereo_la = lookahead.T  # [2, stft_pad_size]
             la_tensor = torch.from_numpy(stereo_la).unsqueeze(0).to(self.device)
 
         # Run inference with state caching
@@ -438,21 +438,26 @@ class RealtimeInference:
                     print(f"Queue sizes - input: {self.input_queue.qsize()}, output: {self.output_queue.qsize()}, "
                           f"accumulator: {len(self.input_accumulator)}")
 
-                # Accumulate input samples
-                mono_input = indata[:, 0] if indata.ndim > 1 else indata.flatten()
-                self.input_accumulator = np.concatenate([self.input_accumulator, mono_input])
+                # Accumulate input samples (preserve stereo)
+                if indata.ndim > 1 and indata.shape[1] >= 2:
+                    stereo_input = indata[:, :2]
+                else:
+                    # Mono input: duplicate to stereo
+                    mono = indata[:, 0] if indata.ndim > 1 else indata.flatten()
+                    stereo_input = np.column_stack([mono, mono])
+                self.input_accumulator = np.concatenate([self.input_accumulator, stereo_input]) if len(self.input_accumulator) > 0 else stereo_input
 
                 # Process complete chunks (need chunk + lookahead samples)
                 required_samples = self.chunk_size + self.stft_pad_size
 
                 while len(self.input_accumulator) >= required_samples:
-                    # Extract chunk and lookahead
+                    # Extract stereo chunk and lookahead [samples, 2]
                     chunk = self.input_accumulator[:self.chunk_size].astype(np.float32)
                     lookahead = self.input_accumulator[self.chunk_size:required_samples].astype(np.float32)
                     # Advance by chunk_size only -- lookahead rolls into next chunk
                     self.input_accumulator = self.input_accumulator[self.chunk_size:]
 
-                    # Process through model with real lookahead audio
+                    # Process through model with real lookahead audio (pass stereo)
                     output = self._process_chunk(chunk, lookahead)
 
                     # Add to output queue
@@ -655,36 +660,34 @@ class FileBasedTest:
         if sr != self.sample_rate:
             audio = resampy.resample(audio, sr, self.sample_rate)
 
-        # Convert to mono if needed
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
-        audio = audio.astype(np.float32)
+        # Ensure stereo
+        if audio.ndim == 1:
+            audio = np.column_stack([audio, audio])
+        audio = audio[:, :2].astype(np.float32)
 
         # Reset state for fresh processing
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
 
         # Process chunk by chunk
         output_chunks = []
-        num_chunks = len(audio) // self.chunk_size
+        num_chunks = audio.shape[0] // self.chunk_size
         stft_pad_size = self.model.stft_pad_size
 
         processing_times = []
         for i in range(num_chunks):
             start = i * self.chunk_size
             end = start + self.chunk_size
-            chunk = audio[start:end]
+            chunk = audio[start:end]  # [chunk_size, 2]
 
             # Get real lookahead audio from file (next stft_pad_size samples)
             la_tensor = None
             la_end = end + stft_pad_size
             if la_end <= len(audio):
-                lookahead = audio[end:la_end]
-                stereo_la = np.stack([lookahead, lookahead], axis=0)
-                la_tensor = torch.from_numpy(stereo_la).unsqueeze(0).to(self.device)
+                lookahead = audio[end:la_end]  # [stft_pad_size, 2]
+                la_tensor = torch.from_numpy(lookahead.T).unsqueeze(0).to(self.device)
 
-            # Convert mono to stereo
-            stereo_input = np.stack([chunk, chunk], axis=0)
-            input_tensor = torch.from_numpy(stereo_input).unsqueeze(0).to(self.device)
+            # Transpose to [2, chunk_size] for model
+            input_tensor = torch.from_numpy(chunk.T).unsqueeze(0).to(self.device)
 
             start_time = time.perf_counter()
             with torch.no_grad():
