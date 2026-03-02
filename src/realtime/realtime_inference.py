@@ -80,7 +80,6 @@ class DebugConfig:
 @dataclass
 class OptimizationConfig:
     """Performance optimization configuration."""
-    precision: str = "fp32"  # "fp32", "fp16", or "bf16"
     use_torch_compile: bool = False
 
 
@@ -98,6 +97,7 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
+    optimization: OptimizationConfig = field(default_factory=OptimizationConfig)
     test: TestConfig = field(default_factory=TestConfig)
 
     @classmethod
@@ -124,6 +124,7 @@ class Config:
 
         audio_data = data.get("audio", {}) or {}
         debug_data = data.get("debug", {}) or {}
+        opt_data = data.get("optimization", {}) or {}
         test_data = data.get("test", {}) or {}
 
         # Load embedding path from top-level config
@@ -144,6 +145,9 @@ class Config:
                 verbose=debug_data.get("verbose", False),
                 passthrough=debug_data.get("passthrough", False),
                 save_dir=to_path(debug_data.get("save_dir")),
+            ),
+            optimization=OptimizationConfig(
+                use_torch_compile=opt_data.get("use_torch_compile", False),
             ),
             test=TestConfig(
                 enabled=test_data.get("enabled", False),
@@ -212,6 +216,9 @@ class RealtimeInference:
             self.embedding = None
             self.state = None
             self.stft_pad_size = 0
+            self._compiled = False
+            self._input_buffer = None
+            self._lookahead_buffer = None
         else:
             # Load model
             self._load_model(config.get_checkpoint_path(), config.get_model_config_path())
@@ -225,12 +232,36 @@ class RealtimeInference:
             self.state = self.model.init_buffers(batch_size=1, device=self.device)
             self.stft_pad_size = self.model.stft_pad_size
 
+            # --- Optimization: compile, pre-allocated tensors ---
+            self._compiled = False
+            if config.optimization.use_torch_compile:
+                try:
+                    self.model = torch.compile(self.model, mode="reduce-overhead")
+                    self._compiled = True
+                    print("torch.compile enabled (reduce-overhead)")
+                except Exception as e:
+                    print(f"torch.compile not available ({e}), continuing without it")
+
+            # Pre-allocate reusable tensors
+            self._input_buffer = torch.zeros(
+                1, 2, self.chunk_size, device=self.device, dtype=torch.float32
+            )
+            self._lookahead_buffer = torch.zeros(
+                1, 2, self.stft_pad_size, device=self.device, dtype=torch.float32
+            )
+
         # Input accumulator for collecting enough samples before processing (stereo)
         self.input_accumulator = np.zeros((0, 2), dtype=np.float32)
 
         # Statistics
         self.chunks_processed = 0
         self.processing_times = []
+        self.inference_times = []
+        self.prep_times = []
+        self.post_times = []
+        self.drops_input = 0
+        self.drops_output = 0
+        self.underruns = 0
 
     def _load_model(self, checkpoint_path: Path, config_path: Path) -> None:
         """Load the TFGridNet model from checkpoint."""
@@ -311,12 +342,6 @@ class RealtimeInference:
         """
         start_time = time.perf_counter()
 
-        # Debug: log input stats
-        if self.debug:
-            has_nan = np.isnan(audio_chunk).any()
-            print(f"Input: shape={audio_chunk.shape}, min={audio_chunk.min():.4f}, "
-                  f"max={audio_chunk.max():.4f}, mean={audio_chunk.mean():.4f}, nan={has_nan}")
-
         # Update input level for monitoring
         with self.input_level_lock:
             self.recent_input_level = np.abs(audio_chunk).max()
@@ -331,9 +356,6 @@ class RealtimeInference:
             self.processing_times.append(elapsed)
             self.chunks_processed += 1
 
-            if self.debug:
-                print(f"Output (passthrough): shape={output_audio.shape}")
-
             # Save debug files
             if self.save_debug_dir:
                 self.debug_inputs.append(audio_chunk.copy())
@@ -341,53 +363,60 @@ class RealtimeInference:
 
             return output_audio
 
-        # Transpose from [chunk_size, 2] to [2, chunk_size] for model
+        # --- Prep: numpy -> tensor ---
+        t_prep = time.perf_counter()
         stereo_input = audio_chunk.T
+        self._input_buffer.copy_(torch.from_numpy(stereo_input).unsqueeze(0))
 
-        # Convert to tensor [1, 2, chunk_size]
-        input_tensor = torch.from_numpy(stereo_input).unsqueeze(0).to(self.device)
-
-        # Prepare lookahead tensor if available (real audio instead of zero-padding)
         la_tensor = None
         if lookahead is not None and len(lookahead) > 0:
-            stereo_la = lookahead.T  # [2, stft_pad_size]
-            la_tensor = torch.from_numpy(stereo_la).unsqueeze(0).to(self.device)
+            stereo_la = lookahead.T
+            self._lookahead_buffer.copy_(torch.from_numpy(stereo_la).unsqueeze(0))
+            la_tensor = self._lookahead_buffer
 
-        # Run inference with state caching
-        with torch.no_grad():
+        # --- Inference ---
+        t_infer = time.perf_counter()
+        with torch.inference_mode():
             output, self.state = self.model.predict(
-                input_tensor,
-                self.embedding[:, 0],  # [B, embed_dim]
+                self._input_buffer,
+                self.embedding[:, 0],
                 self.state,
                 pad=True,
                 lookahead_audio=la_tensor
             )
 
-        # Convert output to numpy [chunk_size, 2]
-        output_audio = output.squeeze(0).cpu().numpy()  # [2, samples]
-
-        # Debug: log output stats before clipping
-        if self.debug:
-            has_nan = np.isnan(output_audio).any()
-            print(f"Output: shape={output_audio.shape}, min={output_audio.min():.4f}, "
-                  f"max={output_audio.max():.4f}, mean={output_audio.mean():.4f}, nan={has_nan}")
-
+        # --- Post: tensor -> numpy ---
+        t_post = time.perf_counter()
+        output_audio = output.squeeze(0).cpu().numpy()
         output_audio = np.clip(output_audio, -1.0, 1.0)
-        output_audio = output_audio.T  # [samples, 2]
+        output_audio = output_audio.T
 
-        # Convert to mono if needed
         if self.output_channels == 1:
             output_audio = output_audio.mean(axis=1, keepdims=True)
+
+        t_done = time.perf_counter()
 
         # Save debug files
         if self.save_debug_dir:
             self.debug_inputs.append(audio_chunk.copy())
             self.debug_outputs.append(output_audio.copy())
 
-        # Record processing time
-        elapsed = time.perf_counter() - start_time
+        # Record timing breakdown
+        elapsed = t_done - start_time
         self.processing_times.append(elapsed)
+        self.prep_times.append(t_infer - t_prep)
+        self.inference_times.append(t_post - t_infer)
+        self.post_times.append(t_done - t_post)
         self.chunks_processed += 1
+
+        if self.debug:
+            chunk_ms = self.chunk_size / self.sample_rate * 1000
+            print(f"[chunk {self.chunks_processed}] "
+                  f"total={elapsed*1000:.2f}ms "
+                  f"(prep={( t_infer - t_prep)*1000:.2f} "
+                  f"infer={(t_post - t_infer)*1000:.2f} "
+                  f"post={(t_done - t_post)*1000:.2f}) "
+                  f"RTF={elapsed*1000/chunk_ms:.3f}")
 
         return output_audio
 
@@ -401,7 +430,7 @@ class RealtimeInference:
             try:
                 self.input_queue.put_nowait(indata.copy())
             except queue.Full:
-                print("Warning: Input queue full, dropping audio")
+                self.drops_input += 1
 
     def _output_callback(self, outdata, frames, time_info, status):
         """Callback for audio output stream."""
@@ -411,20 +440,13 @@ class RealtimeInference:
         try:
             data = self.output_queue.get_nowait()
 
-            if self.debug:
-                print(f"Output callback: frames={frames}, data.shape={data.shape}, "
-                      f"data min={data.min():.4f}, max={data.max():.4f}")
-
             # Ensure correct shape
             if data.shape[0] < frames:
-                # Pad if needed
                 padding = np.zeros((frames - data.shape[0], self.output_channels), dtype=np.float32)
                 data = np.vstack([data, padding])
             outdata[:] = data[:frames]
         except queue.Empty:
-            # Output silence if no data available
-            if self.debug:
-                print(f"Output callback: UNDERRUN (queue empty), frames={frames}")
+            self.underruns += 1
             outdata.fill(0)
 
     def _processing_thread(self):
@@ -433,10 +455,6 @@ class RealtimeInference:
             try:
                 # Get input audio (blocking with timeout)
                 indata = self.input_queue.get(timeout=0.1)
-
-                if self.debug:
-                    print(f"Queue sizes - input: {self.input_queue.qsize()}, output: {self.output_queue.qsize()}, "
-                          f"accumulator: {len(self.input_accumulator)}")
 
                 # Accumulate input samples (preserve stereo)
                 if indata.ndim > 1 and indata.shape[1] >= 2:
@@ -466,8 +484,7 @@ class RealtimeInference:
                         while self.output_queue.qsize() > 10:
                             try:
                                 self.output_queue.get_nowait()
-                                if self.debug:
-                                    print("Warning: Dropping old output chunk to reduce latency")
+                                self.drops_output += 1
                             except queue.Empty:
                                 break
                         self.output_queue.put_nowait(output)
@@ -497,6 +514,7 @@ class RealtimeInference:
         print(f"  Output channels: {self.output_channels}")
         print(f"  Input device: {self.input_device or 'default'}")
         print(f"  Output device: {self.output_device or 'default'}")
+        print(f"  torch.compile: {'enabled' if self._compiled else 'disabled'}")
 
         self.running = True
 
@@ -536,9 +554,13 @@ class RealtimeInference:
                 while self.running:
                     time.sleep(1.0)
                     if self.processing_times:
-                        avg_time = np.mean(self.processing_times[-100:]) * 1000
-                        max_time = np.max(self.processing_times[-100:]) * 1000
+                        recent = self.processing_times[-100:]
+                        recent_ms = np.array(recent) * 1000
                         chunk_duration = self.chunk_size / self.sample_rate * 1000
+                        avg_time = np.mean(recent_ms)
+                        p50 = np.percentile(recent_ms, 50)
+                        p95 = np.percentile(recent_ms, 95)
+                        p99 = np.percentile(recent_ms, 99)
                         rtf = avg_time / chunk_duration
 
                         # Get input level for visualization
@@ -550,12 +572,18 @@ class RealtimeInference:
                         bars = int(max(0, min(30, (level_db + 60) / 2)))  # -60dB to 0dB range
                         level_meter = f"[{'=' * bars}{' ' * (30 - bars)}] {level_db:5.1f}dB"
 
-                        print(f"Chunks: {self.chunks_processed:6d} | "
-                              f"Avg: {avg_time:5.2f}ms | "
-                              f"Max: {max_time:5.2f}ms | "
-                              f"RTF: {rtf:.3f} | "
-                              f"Queue: {self.input_queue.qsize()}/{self.output_queue.qsize()} | "
-                              f"Level: {level_meter}")
+                        stats = (f"Chunks: {self.chunks_processed:6d} | "
+                                 f"Avg: {avg_time:5.2f}ms | "
+                                 f"p50: {p50:5.2f} p95: {p95:5.2f} p99: {p99:5.2f} | "
+                                 f"RTF: {rtf:.3f} | "
+                                 f"Q: {self.input_queue.qsize()}/{self.output_queue.qsize()} | "
+                                 f"Level: {level_meter}")
+
+                        if self.drops_input or self.drops_output or self.underruns:
+                            stats += (f" | Drops(in/out): {self.drops_input}/{self.drops_output} "
+                                      f"Underruns: {self.underruns}")
+
+                        print(stats)
 
         except KeyboardInterrupt:
             print("\nStopping...")
@@ -569,11 +597,25 @@ class RealtimeInference:
 
         # Print final statistics
         if self.processing_times:
+            all_ms = np.array(self.processing_times) * 1000
+            chunk_duration = self.chunk_size / self.sample_rate * 1000
             print(f"\nFinal Statistics:")
-            print(f"  Total chunks processed: {self.chunks_processed}")
-            print(f"  Average processing time: {np.mean(self.processing_times) * 1000:.2f} ms")
-            print(f"  Max processing time: {np.max(self.processing_times) * 1000:.2f} ms")
-            print(f"  Min processing time: {np.min(self.processing_times) * 1000:.2f} ms")
+            print(f"  Total chunks: {self.chunks_processed}")
+            print(f"  Processing (ms) — avg: {np.mean(all_ms):.2f}  "
+                  f"p50: {np.percentile(all_ms, 50):.2f}  "
+                  f"p95: {np.percentile(all_ms, 95):.2f}  "
+                  f"p99: {np.percentile(all_ms, 99):.2f}  "
+                  f"max: {np.max(all_ms):.2f}")
+            if self.inference_times:
+                inf_ms = np.array(self.inference_times) * 1000
+                prep_ms = np.array(self.prep_times) * 1000
+                post_ms = np.array(self.post_times) * 1000
+                print(f"  Breakdown (ms avg) — prep: {np.mean(prep_ms):.2f}  "
+                      f"infer: {np.mean(inf_ms):.2f}  "
+                      f"post: {np.mean(post_ms):.2f}")
+            print(f"  RTF: {np.mean(all_ms) / chunk_duration:.3f}")
+            print(f"  Drops (input/output): {self.drops_input}/{self.drops_output}  "
+                  f"Underruns: {self.underruns}")
 
     def _save_debug_files(self):
         """Save accumulated debug audio to files."""
@@ -617,6 +659,16 @@ class FileBasedTest:
             raise ValueError("Speaker embedding path is required")
         self._load_embedding(config.model.embedding)
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
+
+        # --- Optimization: compile ---
+        self._compiled = False
+        if config.optimization.use_torch_compile:
+            try:
+                self.model = torch.compile(self.model, mode="reduce-overhead")
+                self._compiled = True
+                print("torch.compile enabled (reduce-overhead)")
+            except Exception as e:
+                print(f"torch.compile not available ({e}), continuing without it")
 
     def _load_model(self, checkpoint_path: Path, config_path: Path) -> None:
         """Load the TFGridNet model from checkpoint."""
@@ -673,36 +725,45 @@ class FileBasedTest:
         num_chunks = audio.shape[0] // self.chunk_size
         stft_pad_size = self.model.stft_pad_size
 
+        # Pre-allocate reusable tensors
+        input_buffer = torch.zeros(1, 2, self.chunk_size, device=self.device, dtype=torch.float32)
+        la_buffer = torch.zeros(1, 2, stft_pad_size, device=self.device, dtype=torch.float32)
+
         processing_times = []
         for i in range(num_chunks):
             start = i * self.chunk_size
             end = start + self.chunk_size
             chunk = audio[start:end]  # [chunk_size, 2]
 
+            start_time = time.perf_counter()
+
+            # Reuse pre-allocated input tensor
+            input_buffer.copy_(torch.from_numpy(chunk.T).unsqueeze(0))
+
             # Get real lookahead audio from file (next stft_pad_size samples)
             la_tensor = None
             la_end = end + stft_pad_size
             if la_end <= len(audio):
                 lookahead = audio[end:la_end]  # [stft_pad_size, 2]
-                la_tensor = torch.from_numpy(lookahead.T).unsqueeze(0).to(self.device)
+                la_buffer.copy_(torch.from_numpy(lookahead.T).unsqueeze(0))
+                la_tensor = la_buffer
 
-            # Transpose to [2, chunk_size] for model
-            input_tensor = torch.from_numpy(chunk.T).unsqueeze(0).to(self.device)
-
-            start_time = time.perf_counter()
-            with torch.no_grad():
+            with torch.inference_mode():
                 output, self.state = self.model.predict(
-                    input_tensor,
+                    input_buffer,
                     self.embedding[:, 0],
                     self.state,
                     pad=True,
                     lookahead_audio=la_tensor
                 )
+
+            output_audio = output.squeeze(0).cpu().numpy().T
+            output_audio = np.clip(output_audio, -1.0, 1.0)
+
             elapsed = time.perf_counter() - start_time
             processing_times.append(elapsed)
 
-            output_audio = output.squeeze(0).cpu().numpy().T
-            output_chunks.append(np.clip(output_audio, -1.0, 1.0))
+            output_chunks.append(output_audio)
 
             if (i + 1) % 100 == 0:
                 print(f"Processed {i + 1}/{num_chunks} chunks")
