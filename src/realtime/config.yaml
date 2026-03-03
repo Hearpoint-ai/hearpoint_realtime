@@ -19,10 +19,10 @@ audio:
 
   # Input device index (null for system default)
   # Run with --list-devices to see available devices
-  input_device: null
+  input_device: 5
 
   # Output device index (null for system default)
-  output_device: null
+  output_device: 0
 
   # Number of input channels (1 for mono mic)
   input_channels: 2
@@ -43,7 +43,7 @@ debug:
 
   # Bypass the model entirely - pass audio through unchanged
   # Useful for testing audio I/O pipeline
-  passthrough: false
+  passthrough: true
 
   # Directory to save debug audio files (debug_input.wav, debug_output.wav)
   # Set to null to disable, or a path like "./debug_audio/"
@@ -55,7 +55,7 @@ debug:
 # =============================================================================
 test:
   # Enable file-based test mode (process a file instead of live audio)
-  enabled: true
+  enabled: false
 
   # Path to input audio file
   input_file: media/mixtures/derron_mubashir.wav

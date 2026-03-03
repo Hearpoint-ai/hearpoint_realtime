@@ -13,6 +13,7 @@ Supports:
 """
 
 import argparse
+import contextlib
 import json
 import queue
 import sys
@@ -206,6 +207,10 @@ class RealtimeInference:
         self.device = torch.device(config.model.device) if config.model.device else get_torch_device()
         print(f"Using device: {self.device}")
 
+        # Enable cuDNN autotuner — input shapes are always fixed (chunk_size=128)
+        if self.device.type == 'cuda':
+            torch.backends.cudnn.benchmark = True
+
         if self.passthrough_mode:
             print("*** PASSTHROUGH MODE - bypassing model ***")
             self.model = None
@@ -354,7 +359,12 @@ class RealtimeInference:
             la_tensor = torch.from_numpy(stereo_la).unsqueeze(0).to(self.device)
 
         # Run inference with state caching
-        with torch.no_grad():
+        autocast_ctx = (
+            torch.autocast(device_type='cuda', dtype=torch.float16)
+            if self.device.type == 'cuda'
+            else contextlib.nullcontext()
+        )
+        with torch.no_grad(), autocast_ctx:
             output, self.state = self.model.predict(
                 input_tensor,
                 self.embedding[:, 0],  # [B, embed_dim]
@@ -611,6 +621,10 @@ class FileBasedTest:
         self.chunk_size = config.audio.chunk_size
         self.device = torch.device(config.model.device) if config.model.device else get_torch_device()
 
+        # Enable cuDNN autotuner — input shapes are fixed (chunk_size=128)
+        if self.device.type == 'cuda':
+            torch.backends.cudnn.benchmark = True
+
         # Load model
         self._load_model(config.get_checkpoint_path(), config.get_model_config_path())
         if config.model.embedding is None:
@@ -690,7 +704,12 @@ class FileBasedTest:
             input_tensor = torch.from_numpy(chunk.T).unsqueeze(0).to(self.device)
 
             start_time = time.perf_counter()
-            with torch.no_grad():
+            autocast_ctx = (
+                torch.autocast(device_type='cuda', dtype=torch.float16)
+                if self.device.type == 'cuda'
+                else contextlib.nullcontext()
+            )
+            with torch.no_grad(), autocast_ctx:
                 output, self.state = self.model.predict(
                     input_tensor,
                     self.embedding[:, 0],

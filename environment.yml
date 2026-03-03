@@ -2,22 +2,15 @@ name: hearpoint-realtime
 channels:
   - conda-forge
 dependencies:
-  - python=3.11
+  - python=3.10
   - pip
-  - numpy
-  - pytorch
+  - numpy<2.0.0  # Crucial: Pins NumPy to the 1.x series
   - pysoundfile
-  - six
   - pip:
-      - "skypilot[gcp,lambda]==0.10.5"
-      - "vastai-sdk>=0.1.12"
+      # PyTorch must be installed separately from NVIDIA's Jetson index.
       - asteroid-filterbanks
-      - fastapi
-      - plantuml
-      - python-multipart
       - resampy
       - resemblyzer
-      - uvicorn
       - pysofaconventions
-      - "espnet[all]"
+      - espnet
       - sounddevice
