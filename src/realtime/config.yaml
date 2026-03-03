@@ -39,7 +39,7 @@ audio:
 # =============================================================================
 debug:
   # Enable verbose debug logging (prints input/output stats per chunk)
-  verbose: false
+  verbose: true
 
   # Bypass the model entirely - pass audio through unchanged
   # Useful for testing audio I/O pipeline
@@ -51,11 +51,20 @@ debug:
 
 
 # =============================================================================
+# OPTIMIZATION
+# =============================================================================
+optimization:
+  # Wrap model in torch.compile(mode="reduce-overhead") for graph optimization
+  # Falls back gracefully on unsupported backends (e.g. MPS)
+  use_torch_compile: false
+
+
+# =============================================================================
 # FILE-BASED TEST MODE
 # =============================================================================
 test:
   # Enable file-based test mode (process a file instead of live audio)
-  enabled: true
+  enabled: false
 
   # Path to input audio file
   input_file: media/mixtures/derron_mubashir.wav
