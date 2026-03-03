@@ -100,6 +100,7 @@ class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
     test: TestConfig = field(default_factory=TestConfig)
+    optimization: OptimizationConfig = field(default_factory=OptimizationConfig)
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "Config":
@@ -126,6 +127,7 @@ class Config:
         audio_data = data.get("audio", {}) or {}
         debug_data = data.get("debug", {}) or {}
         test_data = data.get("test", {}) or {}
+        optimization_data = data.get("optimization", {}) or {}
 
         # Load embedding path from top-level config
         embedding_path = to_path(data.get("embedding"))
@@ -150,6 +152,10 @@ class Config:
                 enabled=test_data.get("enabled", False),
                 input_file=to_path(test_data.get("input_file")),
                 output_file=to_path(test_data.get("output_file")),
+            ),
+            optimization=OptimizationConfig(
+                precision=optimization_data.get("precision", "fp32"),
+                use_torch_compile=optimization_data.get("use_torch_compile", False),
             ),
         )
 
@@ -210,6 +216,8 @@ class RealtimeInference:
         # Enable cuDNN autotuner — input shapes are always fixed (chunk_size=128)
         if self.device.type == 'cuda':
             torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
 
         if self.passthrough_mode:
             print("*** PASSTHROUGH MODE - bypassing model ***")
@@ -219,7 +227,11 @@ class RealtimeInference:
             self.stft_pad_size = 0
         else:
             # Load model
-            self._load_model(config.get_checkpoint_path(), config.get_model_config_path())
+            self._load_model(
+                config.get_checkpoint_path(),
+                config.get_model_config_path(),
+                config.optimization.use_torch_compile,
+            )
 
             # Load speaker embedding
             if config.model.embedding is None:
@@ -229,6 +241,7 @@ class RealtimeInference:
             # Initialize model state buffers
             self.state = self.model.init_buffers(batch_size=1, device=self.device)
             self.stft_pad_size = self.model.stft_pad_size
+            self._warmup()
 
         # Input accumulator for collecting enough samples before processing (stereo)
         self.input_accumulator = np.zeros((0, 2), dtype=np.float32)
@@ -237,7 +250,7 @@ class RealtimeInference:
         self.chunks_processed = 0
         self.processing_times = []
 
-    def _load_model(self, checkpoint_path: Path, config_path: Path) -> None:
+    def _load_model(self, checkpoint_path: Path, config_path: Path, use_torch_compile: bool = False) -> None:
         """Load the TFGridNet model from checkpoint."""
         if not config_path.exists():
             raise FileNotFoundError(f"Config not found: {config_path}")
@@ -273,6 +286,28 @@ class RealtimeInference:
 
         self.model.eval()
         print(f"Model loaded from {checkpoint_path}")
+
+        if use_torch_compile and self.device.type == 'cuda':
+            print("Compiling model with torch.compile (reduce-overhead)...")
+            self.model = torch.compile(self.model, mode="reduce-overhead")
+
+    def _warmup(self) -> None:
+        """Warm up CUDA kernels to eliminate first-inference latency spike."""
+        if self.device.type != 'cuda':
+            return
+        print("Warming up CUDA kernels (5 passes)...")
+        embed_dim = self.embedding.shape[-1]
+        dummy_x = torch.zeros(1, 2, self.chunk_size, device=self.device)
+        dummy_e = torch.zeros(1, embed_dim, device=self.device)
+        dummy_la = torch.zeros(1, 2, self.stft_pad_size, device=self.device)
+        warmup_state = self.model.init_buffers(batch_size=1, device=self.device)
+        with torch.inference_mode():
+            for _ in range(5):
+                _, warmup_state = self.model.predict(
+                    dummy_x, dummy_e, warmup_state, lookahead_audio=dummy_la
+                )
+        torch.cuda.synchronize()
+        print("CUDA warmup complete.")
 
     def _load_embedding(self, embedding_path: Path) -> None:
         """Load speaker embedding from .npy file."""
@@ -364,7 +399,7 @@ class RealtimeInference:
             if self.device.type == 'cuda'
             else contextlib.nullcontext()
         )
-        with torch.no_grad(), autocast_ctx:
+        with torch.inference_mode(), autocast_ctx:
             output, self.state = self.model.predict(
                 input_tensor,
                 self.embedding[:, 0],  # [B, embed_dim]
@@ -624,15 +659,40 @@ class FileBasedTest:
         # Enable cuDNN autotuner — input shapes are fixed (chunk_size=128)
         if self.device.type == 'cuda':
             torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
 
         # Load model
-        self._load_model(config.get_checkpoint_path(), config.get_model_config_path())
+        self._load_model(
+            config.get_checkpoint_path(),
+            config.get_model_config_path(),
+            config.optimization.use_torch_compile,
+        )
         if config.model.embedding is None:
             raise ValueError("Speaker embedding path is required")
         self._load_embedding(config.model.embedding)
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
+        self._warmup()
 
-    def _load_model(self, checkpoint_path: Path, config_path: Path) -> None:
+    def _warmup(self) -> None:
+        """Warm up CUDA kernels to eliminate first-inference latency spike."""
+        if self.device.type != 'cuda':
+            return
+        print("Warming up CUDA kernels (5 passes)...")
+        embed_dim = self.embedding.shape[-1]
+        dummy_x = torch.zeros(1, 2, self.chunk_size, device=self.device)
+        dummy_e = torch.zeros(1, embed_dim, device=self.device)
+        dummy_la = torch.zeros(1, 2, self.model.stft_pad_size, device=self.device)
+        warmup_state = self.model.init_buffers(batch_size=1, device=self.device)
+        with torch.inference_mode():
+            for _ in range(5):
+                _, warmup_state = self.model.predict(
+                    dummy_x, dummy_e, warmup_state, lookahead_audio=dummy_la
+                )
+        torch.cuda.synchronize()
+        print("CUDA warmup complete.")
+
+    def _load_model(self, checkpoint_path: Path, config_path: Path, use_torch_compile: bool = False) -> None:
         """Load the TFGridNet model from checkpoint."""
         with config_path.open() as fp:
             config = json.load(fp)
@@ -651,6 +711,10 @@ class FileBasedTest:
 
         self.model.load_state_dict(state_dict, strict=False)
         self.model.eval()
+
+        if use_torch_compile and self.device.type == 'cuda':
+            print("Compiling model with torch.compile (reduce-overhead)...")
+            self.model = torch.compile(self.model, mode="reduce-overhead")
 
     def _load_embedding(self, embedding_path: Path) -> None:
         """Load speaker embedding from .npy file."""
@@ -709,7 +773,7 @@ class FileBasedTest:
                 if self.device.type == 'cuda'
                 else contextlib.nullcontext()
             )
-            with torch.no_grad(), autocast_ctx:
+            with torch.inference_mode(), autocast_ctx:
                 output, self.state = self.model.predict(
                     input_tensor,
                     self.embedding[:, 0],

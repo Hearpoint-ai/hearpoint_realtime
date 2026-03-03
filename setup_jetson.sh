@@ -35,3 +35,11 @@ print(f'PyTorch: {torch.__version__}')
 print(f'NumPy:   {numpy.__version__}')
 print(f'CUDA:    {torch.cuda.is_available()}')
 "
+
+echo ""
+echo "=== Step 5: Set Max Performance Mode ==="
+echo "NOTE: Run these commands on the Jetson before starting inference:"
+echo "  sudo nvpmodel -m 0       # MAXN power mode (all CPU/GPU cores at max)"
+echo "  sudo jetson_clocks       # Lock clocks to max frequency"
+echo ""
+echo "To verify: sudo jetson_clocks --show"
