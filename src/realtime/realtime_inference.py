@@ -62,6 +62,7 @@ class ModelConfig:
 class AudioConfig:
     """Audio-related configuration."""
     sample_rate: int = DEFAULT_SAMPLE_RATE
+    hardware_sample_rate: int = DEFAULT_SAMPLE_RATE
     chunk_size: int = DEFAULT_CHUNK_SIZE
     input_device: int | None = None
     output_device: int | None = None
@@ -136,6 +137,7 @@ class Config:
             model=ModelConfig(embedding=embedding_path),
             audio=AudioConfig(
                 sample_rate=audio_data.get("sample_rate", DEFAULT_SAMPLE_RATE),
+                hardware_sample_rate=audio_data.get("hardware_sample_rate", audio_data.get("sample_rate", DEFAULT_SAMPLE_RATE)),
                 chunk_size=audio_data.get("chunk_size", DEFAULT_CHUNK_SIZE),
                 input_device=audio_data.get("input_device", 5),
                 output_device=audio_data.get("output_device", 4),
@@ -184,6 +186,17 @@ class RealtimeInference:
         self.input_device = config.audio.input_device
         self.output_device = config.audio.output_device
         self.buffer_size_chunks = config.audio.buffer_size_chunks
+        self.hardware_sample_rate = config.audio.hardware_sample_rate
+        self.downsample_factor = self.hardware_sample_rate // self.sample_rate  # e.g. 3
+
+        if self.downsample_factor > 1:
+            from scipy.signal import firwin, lfilter_zi
+            ntaps = 31
+            self._dec_taps = firwin(ntaps, cutoff=self.sample_rate / 2,
+                                    fs=self.hardware_sample_rate)
+            zi = lfilter_zi(self._dec_taps, 1.0)
+            # One state vector per input channel; start at zero
+            self._dec_zi = [zi.copy() * 0.0 for _ in range(config.audio.input_channels)]
 
         # Auto-detect output channels from device if not specified
         if config.audio.output_channels is None:
@@ -436,6 +449,21 @@ class RealtimeInference:
 
         return output_audio
 
+    def _downsample(self, audio: np.ndarray) -> np.ndarray:
+        """Causal FIR anti-aliasing + integer decimation. [N, ch] → [N//factor, ch]"""
+        from scipy.signal import lfilter
+        out = []
+        for ch in range(audio.shape[1]):
+            filtered, self._dec_zi[ch] = lfilter(
+                self._dec_taps, 1.0, audio[:, ch], zi=self._dec_zi[ch])
+            out.append(filtered[::self.downsample_factor])
+        return np.column_stack(out)
+
+    def _upsample(self, audio: np.ndarray) -> np.ndarray:
+        """Polyphase interpolation. [N, ch] → [N*factor, ch]"""
+        from scipy.signal import resample_poly
+        return resample_poly(audio, up=self.downsample_factor, down=1, axis=0)
+
     def _input_callback(self, indata, frames, time_info, status):
         """Callback for audio input stream."""
         if status:
@@ -479,6 +507,9 @@ class RealtimeInference:
                 # Get input audio (blocking with timeout)
                 indata = self.input_queue.get(timeout=0.1)
 
+                if self.downsample_factor > 1:
+                    indata = self._downsample(indata)
+
                 if self.debug:
                     print(f"Queue sizes - input: {self.input_queue.qsize()}, output: {self.output_queue.qsize()}, "
                           f"accumulator: {len(self.input_accumulator)}")
@@ -504,6 +535,9 @@ class RealtimeInference:
 
                     # Process through model with real lookahead audio (pass stereo)
                     output = self._process_chunk(chunk, lookahead)
+
+                    if self.downsample_factor > 1:
+                        output = self._upsample(output)
 
                     # Add to output queue
                     try:
@@ -536,7 +570,8 @@ class RealtimeInference:
     def run(self):
         """Start real-time processing."""
         print(f"\nStarting real-time inference...")
-        print(f"  Sample rate: {self.sample_rate} Hz")
+        print(f"  Hardware sample rate: {self.hardware_sample_rate} Hz")
+        print(f"  Model sample rate:    {self.sample_rate} Hz")
         print(f"  Chunk size: {self.chunk_size} samples ({self.chunk_size / self.sample_rate * 1000:.1f} ms)")
         print(f"  Input channels: {self.input_channels}")
         print(f"  Output channels: {self.output_channels}")
@@ -546,7 +581,7 @@ class RealtimeInference:
         self.running = True
 
         # Pre-fill output queue with silence to prevent initial underruns
-        silence = np.zeros((self.chunk_size, self.output_channels), dtype=np.float32)
+        silence = np.zeros((self.chunk_size * self.downsample_factor, self.output_channels), dtype=np.float32)
         for _ in range(self.buffer_size_chunks * 2):
             self.output_queue.put(silence)
 
@@ -557,19 +592,20 @@ class RealtimeInference:
         # Configure streams
         # Use slightly larger block size for input to reduce callback overhead
         input_blocksize = self.chunk_size * self.buffer_size_chunks
-        output_blocksize = self.chunk_size
+        output_blocksize = self.chunk_size * self.downsample_factor  # e.g. 128*3=384 at 48kHz
 
         try:
             with sd.InputStream(
                 device=self.input_device,
-                samplerate=self.sample_rate,
+                samplerate=self.hardware_sample_rate,
                 channels=self.input_channels,
                 dtype=np.float32,
                 blocksize=input_blocksize,
+                latency='high',
                 callback=self._input_callback,
             ), sd.OutputStream(
                 device=self.output_device,
-                samplerate=self.sample_rate,
+                samplerate=self.hardware_sample_rate,
                 channels=self.output_channels,
                 dtype=np.float32,
                 blocksize=output_blocksize,
