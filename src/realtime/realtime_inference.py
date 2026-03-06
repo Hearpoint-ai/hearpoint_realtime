@@ -25,8 +25,10 @@ from typing import Any
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
+import resampy
 import torch
 import yaml
+from vosk import Model, KaldiRecognizer
 
 # Add repo root to path for imports (so `from src.xxx` resolves)
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -42,6 +44,7 @@ SRC_DIR = REPO_ROOT / "src"
 DEFAULT_CONFIG_PATH = SRC_DIR / "configs" / "tfgridnet_cipic.json"
 DEFAULT_CHECKPOINT_PATH = REPO_ROOT / "weights" / "tfgridnet.ckpt"
 DEFAULT_YAML_CONFIG_PATH = SCRIPT_DIR / "config.yaml"
+TRANSPARENCY_SOUND_PATH = REPO_ROOT / "static" / "transparency-sound-effect.wav"
 
 # Audio parameters (defaults, can be overridden by config)
 DEFAULT_SAMPLE_RATE = 16000
@@ -92,6 +95,14 @@ class TestConfig:
 
 
 @dataclass
+class NameDetectionConfig:
+    """Name/target-word detection via Vosk (runs on a separate thread from same input stream)."""
+    enabled: bool = False
+    model_path: Path | None = None
+    target_word: str = "matthew"
+
+
+@dataclass
 class Config:
     """Complete configuration for real-time inference."""
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -99,6 +110,7 @@ class Config:
     debug: DebugConfig = field(default_factory=DebugConfig)
     optimization: OptimizationConfig = field(default_factory=OptimizationConfig)
     test: TestConfig = field(default_factory=TestConfig)
+    name_detection: NameDetectionConfig = field(default_factory=NameDetectionConfig)
 
     @classmethod
     def from_yaml(cls, yaml_path: Path) -> "Config":
@@ -126,9 +138,14 @@ class Config:
         debug_data = data.get("debug", {}) or {}
         opt_data = data.get("optimization", {}) or {}
         test_data = data.get("test", {}) or {}
+        name_detection_data = data.get("name_detection", {}) or {}
 
         # Load embedding path from top-level config
         embedding_path = to_path(data.get("embedding"))
+
+        # Name detection model path: from config or default under repo
+        nd_model = name_detection_data.get("model_path")
+        nd_model_path = to_path(nd_model) if nd_model else REPO_ROOT / "src" / "models" / "vosk-model-small-en-us-0.15"
 
         return cls(
             model=ModelConfig(embedding=embedding_path),
@@ -153,6 +170,11 @@ class Config:
                 enabled=test_data.get("enabled", False),
                 input_file=to_path(test_data.get("input_file")),
                 output_file=to_path(test_data.get("output_file")),
+            ),
+            name_detection=NameDetectionConfig(
+                enabled=name_detection_data.get("enabled", False),
+                model_path=nd_model_path,
+                target_word=name_detection_data.get("target_word"),
             ),
         )
 
@@ -201,6 +223,12 @@ class RealtimeInference:
         self.running = False
         self.input_queue = queue.Queue(maxsize=64)
         self.output_queue = queue.Queue(maxsize=64)
+
+        self.name_detection_enabled = config.name_detection.enabled
+        if self.name_detection_enabled:
+            self.name_detection_queue = queue.Queue(maxsize=64)
+            self._name_detection_target = config.name_detection.target_word.lower().strip()
+            self._name_detection_model_path = config.name_detection.model_path
 
         # For input level monitoring
         self.recent_input_level = 0.0
@@ -431,6 +459,13 @@ class RealtimeInference:
                 self.input_queue.put_nowait(indata.copy())
             except queue.Full:
                 self.drops_input += 1
+                print("Warning: Input queue full, dropping audio")
+            # Also add to name-detection queue -- if enabled
+            if self.name_detection_queue is not None:
+                try:
+                    self.name_detection_queue.put_nowait(indata.copy())
+                except queue.Full:
+                    print("Warning: [Name Detection] queue full, dropping audio")
 
     def _output_callback(self, outdata, frames, time_info, status):
         """Callback for audio output stream."""
@@ -498,6 +533,71 @@ class RealtimeInference:
                 import traceback
                 traceback.print_exc()
 
+    def _name_detection_thread(self) -> None:
+        """Background thread: Vosk ASR on tee'd input stream, trigger on target word."""
+
+        if self._name_detection_model_path is None or not self._name_detection_model_path.exists():
+            print("Name detection: model path missing or invalid, disabling.")
+            return
+        model = Model(str(self._name_detection_model_path))
+        recognizer = KaldiRecognizer(model, self.sample_rate)
+        target = self._name_detection_target
+
+        while self.running:
+            try:
+                chunk = self.name_detection_queue.get(timeout=0.1)
+                # Convert float32 (stereo or mono) to mono int16 bytes --> Expected Vosk input format
+                if chunk.ndim > 1:
+                    mono = chunk.mean(axis=1)
+                else:
+                    mono = chunk.flatten()
+                data = (mono * 32767).astype(np.int16).tobytes()
+
+                if recognizer.AcceptWaveform(data):
+                    result = json.loads(recognizer.Result())
+                    text = (result.get("text") or "").lower().strip()
+                    if target in text.split() and not self.passthrough_mode:
+                        self.passthrough_mode = True
+                        print("***NAME DETECTED***")
+                        threading.Thread(target=self._play_transparency_sound, daemon=True).start()
+                else:
+                    partial = json.loads(recognizer.PartialResult())
+                    text = (partial.get("partial") or "").lower().strip()
+                    if text and target in text.split() and not self.passthrough_mode:
+                        self.passthrough_mode = True
+                        print("***NAME DETECTED***")
+                        threading.Thread(target=self._play_transparency_sound, daemon=True).start()
+
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Name detection error: {e}")
+
+    def _play_transparency_sound(self) -> None:
+        """Play the transparency sound effect once (in a separate thread). Does not block."""
+        if not TRANSPARENCY_SOUND_PATH.exists():
+            print("Transparency sound: file not found, skipping.")
+            return
+        try:
+            audio, file_sr = sf.read(str(TRANSPARENCY_SOUND_PATH), dtype="float32")
+            # don't know how useful this is.
+            if file_sr != self.sample_rate:
+                if audio.ndim == 1:
+                    audio = resampy.resample(audio, file_sr, self.sample_rate)
+                else:
+                    audio = resampy.resample(audio, file_sr, self.sample_rate, axis=0)
+            if audio.ndim == 1:
+                if self.output_channels == 2:
+                    audio = np.column_stack([audio, audio])
+            else:
+                audio = audio[:, :2]
+                if self.output_channels == 1:
+                    audio = audio.mean(axis=1, keepdims=True)
+            audio = audio.astype(np.float32)
+            sd.play(audio, self.sample_rate, device=self.output_device, blocking=True)
+        except Exception as e:
+            print(f"Transparency sound playback failed: {e}")
+
     def list_devices(self):
         """List available audio devices."""
         print("\nAvailable audio devices:")
@@ -515,6 +615,8 @@ class RealtimeInference:
         print(f"  Input device: {self.input_device or 'default'}")
         print(f"  Output device: {self.output_device or 'default'}")
         print(f"  torch.compile: {'enabled' if self._compiled else 'disabled'}")
+        if self.name_detection_enabled:
+            print(f"  Name detection: ON (target word: {self._name_detection_target})")
 
         self.running = True
 
@@ -526,6 +628,11 @@ class RealtimeInference:
         # Start processing thread
         process_thread = threading.Thread(target=self._processing_thread, daemon=True)
         process_thread.start()
+
+        name_detection_thread = None
+        if self.name_detection_enabled:
+            name_detection_thread = threading.Thread(target=self._name_detection_thread, daemon=True)
+            name_detection_thread.start()
 
         # Configure streams
         # Use slightly larger block size for input to reduce callback overhead
@@ -590,6 +697,8 @@ class RealtimeInference:
         finally:
             self.running = False
             process_thread.join(timeout=1.0)
+            if name_detection_thread is not None:
+                name_detection_thread.join(timeout=1.0)
 
         # Save debug files if requested
         if self.save_debug_dir and self.debug_inputs:
@@ -702,8 +811,6 @@ class FileBasedTest:
 
         This validates that streaming inference produces correct results.
         """
-        import soundfile as sf
-        import resampy
 
         print(f"Processing {input_path} -> {output_path}")
 
