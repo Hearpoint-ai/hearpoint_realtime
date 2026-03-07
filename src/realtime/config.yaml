@@ -17,7 +17,7 @@ audio:
   hardware_sample_rate: 48000
 
   # Chunk size in samples
-  chunk_size: 128
+  chunk_size: 256
 
   # Input device index (null for system default)
   # Run with --list-devices to see available devices
@@ -33,7 +33,7 @@ audio:
   output_channels: 2
 
   # Number of chunks to buffer for input (higher = more stable, more latency)
-  buffer_size_chunks: 16
+  buffer_size_chunks: 4
 
 
 # =============================================================================
@@ -60,8 +60,9 @@ optimization:
   # FP16 autocast is already wired in _process_chunk for CUDA
   precision: fp16
 
-  # Wrap model with torch.compile(mode="reduce-overhead") after loading
-  # Reduces kernel launch overhead ~20-40%; first call will be slower (compilation)
+  # Wrap model with torch.compile(mode="default") after loading.
+  # "default" uses kernel fusion without CUDA graphs, safe for dynamic state updates.
+  # "reduce-overhead" (CUDA graphs) conflicts with this model's dynamic state tensors.
   use_torch_compile: true
 
 

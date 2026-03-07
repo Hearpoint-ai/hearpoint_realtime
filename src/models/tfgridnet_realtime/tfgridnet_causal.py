@@ -373,6 +373,7 @@ class GridNetBlock(nn.Module):
                     # [B, T, Q, H, E] -> [B, H, T, Q, E] ->  [B * H, T, Q * E]
                     Lambda(lambda x: x.reshape(x.shape[0], x.shape[1], x.shape[2], n_head, E)\
                                       .permute(0, 3, 1, 2, 4)\
+                                      .contiguous()\
                                       .reshape(x.shape[0] * n_head, x.shape[1], x.shape[2] * E)), # (BH, T, Q * E)
                     LayerNormalization4DCF((n_freqs, E), eps=eps),
                 ),
@@ -384,6 +385,7 @@ class GridNetBlock(nn.Module):
                     _get_activation_layer(activation)(),
                     Lambda(lambda x: x.reshape(x.shape[0], x.shape[1], x.shape[2], n_head, E)\
                                       .permute(0, 3, 1, 2, 4)\
+                                      .contiguous()\
                                       .reshape(x.shape[0] * n_head, x.shape[1], x.shape[2] * E)),
                     LayerNormalization4DCF((n_freqs, E), eps=eps),
                 ),
@@ -395,6 +397,7 @@ class GridNetBlock(nn.Module):
                     _get_activation_layer(activation)(),
                     Lambda(lambda x: x.reshape(x.shape[0], x.shape[1], x.shape[2], n_head, (emb_dim // n_head))\
                                       .permute(0, 3, 1, 2, 4)\
+                                      .contiguous()\
                                       .reshape(x.shape[0] * n_head, x.shape[1], x.shape[2] * (emb_dim // n_head))),
                     LayerNormalization4DCF((n_freqs, emb_dim // n_head), eps=eps),
                 ),
@@ -533,12 +536,12 @@ class GridNetBlock(nn.Module):
         input_ = intra_rnn # [B, T, Q, C]
         
         inter_rnn = self.inter_norm(intra_rnn)  # [B, T, Q, C]
-        inter_rnn = (inter_rnn.transpose(1, 2).reshape(B * Q, T, C))  # [BQ, T, C]
+        inter_rnn = (inter_rnn.transpose(1, 2).contiguous().reshape(B * Q, T, C))  # [BQ, T, C]
         
         self.inter_rnn.flatten_parameters()
         
-        h0 = init_state['h0']
-        c0 = init_state['c0']
+        h0 = init_state['h0'].to(inter_rnn.dtype)
+        c0 = init_state['c0'].to(inter_rnn.dtype)
 
         inter_rnn, (h0, c0) = self.inter_rnn(inter_rnn, (h0, c0))  # [BQ, -1, H]
        
@@ -590,7 +593,7 @@ class GridNetBlock(nn.Module):
                 V = V.transpose(1, 2) # [B', Q * C, T]
                 
                 batch = V.reshape(B0, self.n_head, self.n_freqs, self.V_dim, T0) # [B, H, Q, C, T]
-                batch = batch.transpose(2, 3) # [B, H, C, Q, T]
+                batch = batch.transpose(2, 3).contiguous() # [B, H, C, Q, T]
                 batch = batch.reshape(B0, self.n_head * self.V_dim, self.n_freqs, T0) # [B, HC, Q, T]
                 batch = batch.permute(0, 3, 2, 1) # [B, T, Q, HC]
                 

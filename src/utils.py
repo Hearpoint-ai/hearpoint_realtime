@@ -7,12 +7,10 @@ import torch
 
 def get_torch_device() -> torch.device:
     """
-    Choose the best available torch device in order: CUDA, MPS, CPU.
+    Choose the best available torch device: CUDA or CPU.
     """
     if torch.cuda.is_available():
         return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
     return torch.device("cpu")
 
 

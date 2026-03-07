@@ -13,7 +13,6 @@ Supports:
 """
 
 import argparse
-import contextlib
 import json
 import queue
 import sys
@@ -27,6 +26,7 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 import torch
+import torch.nn as nn
 import yaml
 
 # Add repo root to path for imports (so `from src.xxx` resolves)
@@ -47,6 +47,12 @@ DEFAULT_YAML_CONFIG_PATH = SCRIPT_DIR / "config.yaml"
 # Audio parameters (defaults, can be overridden by config)
 DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_CHUNK_SIZE = 128  # 8ms at 16kHz - matches model's stft_chunk_size
+
+_PRECISION_MAP = {
+    'fp32': torch.float32,
+    'fp16': torch.float16,
+    'bf16': torch.bfloat16,
+}
 
 
 @dataclass
@@ -190,13 +196,13 @@ class RealtimeInference:
         self.downsample_factor = self.hardware_sample_rate // self.sample_rate  # e.g. 3
 
         if self.downsample_factor > 1:
-            from scipy.signal import firwin, lfilter_zi
-            ntaps = 31
-            self._dec_taps = firwin(ntaps, cutoff=self.sample_rate / 2,
-                                    fs=self.hardware_sample_rate)
-            zi = lfilter_zi(self._dec_taps, 1.0)
-            # One state vector per input channel; start at zero
-            self._dec_zi = [zi.copy() * 0.0 for _ in range(config.audio.input_channels)]
+            from scipy.signal import firwin
+            _ntaps = 31
+            self._ntaps = _ntaps
+            self._taps_down = firwin(_ntaps, cutoff=self.sample_rate / 2,
+                                     fs=self.hardware_sample_rate).astype(np.float32)
+            self._taps_up = (firwin(_ntaps, cutoff=1.0 / self.downsample_factor)
+                             * self.downsample_factor).astype(np.float32)
 
         # Auto-detect output channels from device if not specified
         if config.audio.output_channels is None:
@@ -226,11 +232,38 @@ class RealtimeInference:
         self.device = torch.device(config.model.device) if config.model.device else get_torch_device()
         print(f"Using device: {self.device}")
 
-        # Enable cuDNN autotuner — input shapes are always fixed (chunk_size=128)
         if self.device.type == 'cuda':
+            torch.cuda.set_device(self.device.index or 0)
+            # Enable cuDNN autotuner — input shapes are always fixed (chunk_size=128)
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
+
+        # Build GPU resampling modules now that device is known
+        if self.downsample_factor > 1:
+            self._resample_down = nn.Conv1d(
+                1, 1, self._ntaps, stride=self.downsample_factor, bias=False
+            ).to(self.device)
+            with torch.no_grad():
+                self._resample_down.weight.copy_(
+                    torch.from_numpy(self._taps_down).view(1, 1, -1)
+                )
+            self._resample_down.weight.requires_grad_(False)
+
+            _up_pad = (self._ntaps - self.downsample_factor) // 2
+            self._resample_up = nn.ConvTranspose1d(
+                1, 1, self._ntaps, stride=self.downsample_factor, bias=False, padding=_up_pad
+            ).to(self.device)
+            with torch.no_grad():
+                self._resample_up.weight.copy_(
+                    torch.from_numpy(self._taps_up).view(1, 1, -1)
+                )
+            self._resample_up.weight.requires_grad_(False)
+
+            # State for causal downsampling: last ntaps-1 samples per input channel
+            self._dec_state = torch.zeros(
+                config.audio.input_channels, 1, self._ntaps - 1, device=self.device
+            )
 
         if self.passthrough_mode:
             print("*** PASSTHROUGH MODE - bypassing model ***")
@@ -253,8 +286,17 @@ class RealtimeInference:
 
             # Initialize model state buffers
             self.state = self.model.init_buffers(batch_size=1, device=self.device)
+            if self.config.optimization.precision in ('fp16', 'bf16'):
+                dtype = _PRECISION_MAP[self.config.optimization.precision]
+                for buf in self.state['gridnet_bufs'].values():
+                    buf['h0'] = buf['h0'].to(dtype)
+                    buf['c0'] = buf['c0'].to(dtype)
             self.stft_pad_size = self.model.stft_pad_size
             self._warmup()
+
+            # Pre-allocate pinned memory for fast CPU→GPU chunk transfers
+            self._input_pin = torch.zeros(self.chunk_size, 2, dtype=torch.float32).pin_memory()
+            self._la_pin = torch.zeros(self.stft_pad_size, 2, dtype=torch.float32).pin_memory()
 
         # Input accumulator for collecting enough samples before processing (stereo)
         self.input_accumulator = np.zeros((0, 2), dtype=np.float32)
@@ -301,25 +343,31 @@ class RealtimeInference:
         print(f"Model loaded from {checkpoint_path}")
 
         if use_torch_compile and self.device.type == 'cuda':
-            print("Compiling model with torch.compile (reduce-overhead)...")
-            self.model = torch.compile(self.model, mode="reduce-overhead")
+            print("Compiling model with torch.compile (default)...")
+            self.model = torch.compile(self.model, mode="default")
 
     def _warmup(self) -> None:
         """Warm up CUDA kernels to eliminate first-inference latency spike."""
         if self.device.type != 'cuda':
             return
-        print("Warming up CUDA kernels (5 passes)...")
+        print("Warming up CUDA kernels (20 passes)...")
         embed_dim = self.embedding.shape[-1]
         dummy_x = torch.zeros(1, 2, self.chunk_size, device=self.device)
         dummy_e = torch.zeros(1, embed_dim, device=self.device)
         dummy_la = torch.zeros(1, 2, self.stft_pad_size, device=self.device)
         warmup_state = self.model.init_buffers(batch_size=1, device=self.device)
+        if self.config.optimization.precision in ('fp16', 'bf16'):
+            dtype = _PRECISION_MAP[self.config.optimization.precision]
+            for buf in warmup_state['gridnet_bufs'].values():
+                buf['h0'] = buf['h0'].to(dtype)
+                buf['c0'] = buf['c0'].to(dtype)
         with torch.inference_mode():
-            for _ in range(5):
+            for i in range(20):
                 _, warmup_state = self.model.predict(
                     dummy_x, dummy_e, warmup_state, lookahead_audio=dummy_la
                 )
-        torch.cuda.synchronize()
+                if (i + 1) % 5 == 0:
+                    torch.cuda.synchronize()
         print("CUDA warmup complete.")
 
     def _load_embedding(self, embedding_path: Path) -> None:
@@ -394,24 +442,20 @@ class RealtimeInference:
 
             return output_audio
 
-        # Transpose from [chunk_size, 2] to [2, chunk_size] for model
-        stereo_input = audio_chunk.T
-
-        # Convert to tensor [1, 2, chunk_size]
-        input_tensor = torch.from_numpy(stereo_input).unsqueeze(0).to(self.device)
+        # Transpose from [chunk_size, 2] to [2, chunk_size] for model.
+        # Use pinned memory for fast CPU→GPU transfer.
+        self._input_pin.copy_(torch.from_numpy(audio_chunk))
+        input_tensor = self._input_pin.to(self.device, non_blocking=True).T.unsqueeze(0)  # [1, 2, chunk_size]
 
         # Prepare lookahead tensor if available (real audio instead of zero-padding)
         la_tensor = None
         if lookahead is not None and len(lookahead) > 0:
-            stereo_la = lookahead.T  # [2, stft_pad_size]
-            la_tensor = torch.from_numpy(stereo_la).unsqueeze(0).to(self.device)
+            self._la_pin.copy_(torch.from_numpy(lookahead))
+            la_tensor = self._la_pin.to(self.device, non_blocking=True).T.unsqueeze(0)
 
         # Run inference with state caching
-        autocast_ctx = (
-            torch.autocast(device_type='cuda', dtype=torch.float16)
-            if self.device.type == 'cuda'
-            else contextlib.nullcontext()
-        )
+        autocast_dtype = _PRECISION_MAP.get(self.config.optimization.precision, torch.float16)
+        autocast_ctx = torch.autocast(device_type='cuda', dtype=autocast_dtype, cache_enabled=True)
         with torch.inference_mode(), autocast_ctx:
             output, self.state = self.model.predict(
                 input_tensor,
@@ -450,19 +494,21 @@ class RealtimeInference:
         return output_audio
 
     def _downsample(self, audio: np.ndarray) -> np.ndarray:
-        """Causal FIR anti-aliasing + integer decimation. [N, ch] → [N//factor, ch]"""
-        from scipy.signal import lfilter
-        out = []
-        for ch in range(audio.shape[1]):
-            filtered, self._dec_zi[ch] = lfilter(
-                self._dec_taps, 1.0, audio[:, ch], zi=self._dec_zi[ch])
-            out.append(filtered[::self.downsample_factor])
-        return np.column_stack(out)
+        """GPU Conv1d causal anti-aliasing + integer decimation. [N, ch] → [N//factor, ch]"""
+        ch = audio.shape[1]
+        # [ch, 1, N] — each channel processed independently as a batch item
+        x = torch.from_numpy(audio).float().T.unsqueeze(1).to(self.device, non_blocking=True)
+        # Prepend causal state so filter has context across chunk boundaries
+        x = torch.cat([self._dec_state, x], dim=2)  # [ch, 1, ntaps-1+N]
+        self._dec_state = x[:, :, -(self._ntaps - 1):].detach()
+        out = self._resample_down(x)  # [ch, 1, N//factor]
+        return out.squeeze(1).T.cpu().numpy()  # [N//factor, ch]
 
     def _upsample(self, audio: np.ndarray) -> np.ndarray:
-        """Polyphase interpolation. [N, ch] → [N*factor, ch]"""
-        from scipy.signal import resample_poly
-        return resample_poly(audio, up=self.downsample_factor, down=1, axis=0)
+        """GPU ConvTranspose1d interpolation. [N, ch] → [N*factor, ch]"""
+        x = torch.from_numpy(audio).float().T.unsqueeze(1).to(self.device, non_blocking=True)
+        out = self._resample_up(x)  # [ch, 1, N*factor]
+        return out.squeeze(1).T.cpu().numpy()  # [N*factor, ch]
 
     def _input_callback(self, indata, frames, time_info, status):
         """Callback for audio input stream."""
@@ -714,18 +760,19 @@ class FileBasedTest:
         """Warm up CUDA kernels to eliminate first-inference latency spike."""
         if self.device.type != 'cuda':
             return
-        print("Warming up CUDA kernels (5 passes)...")
+        print("Warming up CUDA kernels (20 passes)...")
         embed_dim = self.embedding.shape[-1]
         dummy_x = torch.zeros(1, 2, self.chunk_size, device=self.device)
         dummy_e = torch.zeros(1, embed_dim, device=self.device)
         dummy_la = torch.zeros(1, 2, self.model.stft_pad_size, device=self.device)
         warmup_state = self.model.init_buffers(batch_size=1, device=self.device)
         with torch.inference_mode():
-            for _ in range(5):
+            for i in range(20):
                 _, warmup_state = self.model.predict(
                     dummy_x, dummy_e, warmup_state, lookahead_audio=dummy_la
                 )
-        torch.cuda.synchronize()
+                if (i + 1) % 5 == 0:
+                    torch.cuda.synchronize()
         print("CUDA warmup complete.")
 
     def _load_model(self, checkpoint_path: Path, config_path: Path, use_torch_compile: bool = False) -> None:
@@ -749,8 +796,8 @@ class FileBasedTest:
         self.model.eval()
 
         if use_torch_compile and self.device.type == 'cuda':
-            print("Compiling model with torch.compile (reduce-overhead)...")
-            self.model = torch.compile(self.model, mode="reduce-overhead")
+            print("Compiling model with torch.compile (default)...")
+            self.model = torch.compile(self.model, mode="default")
 
     def _load_embedding(self, embedding_path: Path) -> None:
         """Load speaker embedding from .npy file."""
@@ -804,11 +851,8 @@ class FileBasedTest:
             input_tensor = torch.from_numpy(chunk.T).unsqueeze(0).to(self.device)
 
             start_time = time.perf_counter()
-            autocast_ctx = (
-                torch.autocast(device_type='cuda', dtype=torch.float16)
-                if self.device.type == 'cuda'
-                else contextlib.nullcontext()
-            )
+            autocast_dtype = _PRECISION_MAP.get(self.config.optimization.precision, torch.float16)
+            autocast_ctx = torch.autocast(device_type='cuda', dtype=autocast_dtype, cache_enabled=True)
             with torch.inference_mode(), autocast_ctx:
                 output, self.state = self.model.predict(
                     input_tensor,
