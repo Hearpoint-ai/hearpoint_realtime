@@ -24,8 +24,8 @@ audio:
   # Output device index (null for system default)
   output_device: null
 
-  # Number of input channels (1 for mono mic)
-  input_channels: 2
+  # Number of input channels (1 for mono mic, 2 for stereo mic)
+  input_channels: 1
 
   # Number of output channels (null for auto-detect, 1 for mono, 2 for stereo)
   output_channels: 2

@@ -1,0 +1,17 @@
+dev:
+  # --- latency (applies to both file and live mode) ---
+  rtf_avg: 1.0
+  nan_count: 0
+  clip_ratio: 0.02
+  # --- stability (live mode only; stub-zero in file mode — excluded from file-mode eval) ---
+  drops_input: 0       # live only
+  drops_output: 0      # live only
+  underruns: 0         # live only
+
+target:
+  rtf_avg: 0.8
+  nan_count: 0
+  clip_ratio: 0.01
+  drops_input: 0       # live only
+  drops_output: 0      # live only
+  underruns: 0         # live only

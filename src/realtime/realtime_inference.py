@@ -15,10 +15,12 @@ Supports:
 import argparse
 import json
 import queue
+import socket
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +48,63 @@ DEFAULT_YAML_CONFIG_PATH = SCRIPT_DIR / "config.yaml"
 # Audio parameters (defaults, can be overridden by config)
 DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_CHUNK_SIZE = 128  # 8ms at 16kHz - matches model's stft_chunk_size
+
+# Threshold configuration
+DEFAULT_THRESHOLDS_PATH = SCRIPT_DIR / "thresholds.yaml"
+
+# Operators hard-coded per metric key — do not infer from value
+_THRESHOLD_OPS: dict[str, str] = {
+    "drops_input":             "==",
+    "drops_output":            "==",
+    "underruns":               "==",
+    "nan_count":               "==",
+    "rtf_avg":                 "<",
+    "clip_ratio":              "<=",
+    "cosine_similarity_delta": ">=",
+}
+
+# Excluded from threshold evaluation in file mode (always stub-zero)
+_FILE_MODE_EXCLUDED: set[str] = {"drops_input", "drops_output", "underruns"}
+
+
+def _load_threshold_profile(profile: str, path: Path = DEFAULT_THRESHOLDS_PATH) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(f"thresholds.yaml not found: {path}")
+    with path.open() as f:
+        data = yaml.safe_load(f)
+    if profile not in data:
+        raise ValueError(f"Unknown profile '{profile}'. Available: {list(data.keys())}")
+    return {k: v for k, v in data[profile].items() if v is not None}
+
+
+def _evaluate_thresholds(stats: dict, profile_thresholds: dict, mode: str) -> list[str]:
+    """Return list of metric names that failed their threshold check."""
+    excluded = _FILE_MODE_EXCLUDED if mode == "file" else set()
+    failed = []
+    for metric, limit in profile_thresholds.items():
+        if metric in excluded or metric not in stats:
+            continue
+        op = _THRESHOLD_OPS.get(metric, "==")
+        actual = stats[metric]
+        if   op == "==" and actual != limit:      failed.append(metric)
+        elif op == "<"  and not (actual < limit):  failed.append(metric)
+        elif op == "<=" and not (actual <= limit): failed.append(metric)
+        elif op == ">=" and not (actual >= limit): failed.append(metric)
+    return failed
+
+
+def _write_report(stats: dict, report_path: Path, failed_thresholds: list[str]) -> None:
+    """Write JSON report to disk annotated with pass/fail status."""
+    out = dict(stats)
+    out["status"] = "pass" if not failed_thresholds else "fail"
+    out["failed_thresholds"] = failed_thresholds
+    report_path = Path(report_path)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    with report_path.open("w") as f:
+        json.dump(out, f, indent=2)
+    print(f"Report written: {report_path}")
+    if failed_thresholds:
+        print(f"THRESHOLD FAILURES: {failed_thresholds}")
 
 
 @dataclass
@@ -268,6 +327,14 @@ class RealtimeInference:
         self.drops_output = 0
         self.underruns = 0
 
+        # Evaluation metric accumulators (set warmup_chunks before calling run())
+        self.warmup_chunks = 0
+        self.nan_count = 0
+        self._sq_sum_in = 0.0
+        self._sq_sum_out = 0.0
+        self._total_post_warmup_samples = 0
+        self._clipped_post_warmup = 0
+
     def _load_model(self, checkpoint_path: Path, config_path: Path) -> None:
         """Load the TFGridNet model from checkpoint."""
         if not config_path.exists():
@@ -376,6 +443,15 @@ class RealtimeInference:
                 self.debug_inputs.append(audio_chunk.copy())
                 self.debug_outputs.append(output_audio.copy())
 
+            # Metric tracking
+            self.nan_count += int(np.isnan(output_audio).sum())
+            if self.chunks_processed >= self.warmup_chunks:
+                n = output_audio.size
+                self._sq_sum_in += float(np.sum(audio_chunk.astype(np.float64) ** 2))
+                self._sq_sum_out += float(np.sum(output_audio.astype(np.float64) ** 2))
+                self._clipped_post_warmup += int((np.abs(output_audio) >= 1.0).sum())
+                self._total_post_warmup_samples += n
+
             return output_audio
 
         # --- Prep: numpy -> tensor ---
@@ -422,6 +498,16 @@ class RealtimeInference:
         self.prep_times.append(t_infer - t_prep)
         self.inference_times.append(t_post - t_infer)
         self.post_times.append(t_done - t_post)
+
+        # Metric tracking
+        self.nan_count += int(np.isnan(output_audio).sum())
+        if self.chunks_processed >= self.warmup_chunks:
+            n = output_audio.size
+            self._sq_sum_in += float(np.sum(audio_chunk.astype(np.float64) ** 2))
+            self._sq_sum_out += float(np.sum(output_audio.astype(np.float64) ** 2))
+            self._clipped_post_warmup += int((np.abs(output_audio) >= 1.0).sum())
+            self._total_post_warmup_samples += n
+
         self.chunks_processed += 1
 
         if self.debug:
@@ -520,8 +606,8 @@ class RealtimeInference:
         print(f"\nDefault input device: {sd.default.device[0]}")
         print(f"Default output device: {sd.default.device[1]}")
 
-    def run(self):
-        """Start real-time processing."""
+    def run(self, duration: float | None = None) -> dict:
+        """Start real-time processing. Returns a stats dict."""
         print(f"\nStarting real-time inference...")
         print(f"  Sample rate: {self.sample_rate} Hz")
         print(f"  Chunk size: {self.chunk_size} samples ({self.chunk_size / self.sample_rate * 1000:.1f} ms)")
@@ -566,8 +652,12 @@ class RealtimeInference:
                 print("\nProcessing... Press Ctrl+C to stop.\n")
 
                 # Main loop - print stats periodically
+                run_start = time.perf_counter()
                 while self.running:
                     time.sleep(1.0)
+                    if duration is not None and (time.perf_counter() - run_start) >= duration:
+                        self.running = False
+                        break
                     if self.processing_times:
                         recent = self.processing_times[-100:]
                         recent_ms = np.array(recent) * 1000
@@ -631,6 +721,50 @@ class RealtimeInference:
             print(f"  RTF: {np.mean(all_ms) / chunk_duration:.3f}")
             print(f"  Drops (input/output): {self.drops_input}/{self.drops_output}  "
                   f"Underruns: {self.underruns}")
+
+        # Build and return stats dict
+        chunk_duration_ms = self.chunk_size / self.sample_rate * 1000
+        pw_times = self.processing_times[self.warmup_chunks:]
+        if pw_times:
+            pw_ms = np.array(pw_times) * 1000
+            rtf_avg         = float(np.mean(pw_ms) / chunk_duration_ms)
+            latency_ms_avg  = float(np.mean(pw_ms))
+            latency_ms_p50  = float(np.percentile(pw_ms, 50))
+            latency_ms_p95  = float(np.percentile(pw_ms, 95))
+            latency_ms_p99  = float(np.percentile(pw_ms, 99))
+            latency_ms_max  = float(np.max(pw_ms))
+        else:
+            rtf_avg = latency_ms_avg = latency_ms_p50 = latency_ms_p95 = latency_ms_p99 = latency_ms_max = 0.0
+
+        n_pw = self._total_post_warmup_samples
+        rms_in     = float(np.sqrt(self._sq_sum_in  / n_pw)) if n_pw > 0 else 0.0
+        rms_out    = float(np.sqrt(self._sq_sum_out / n_pw)) if n_pw > 0 else 0.0
+        clip_ratio = float(self._clipped_post_warmup / n_pw) if n_pw > 0 else 0.0
+
+        return {
+            "mode":                  "live",
+            "timestamp":             datetime.now(timezone.utc).isoformat(),
+            "host_id":               socket.gethostname(),
+            "device":                str(self.device),
+            "sample_rate":           self.sample_rate,
+            "chunk_size":            self.chunk_size,
+            "stft_pad_size_samples": self.stft_pad_size if not self.passthrough_mode else 0,
+            "chunks":                self.chunks_processed,
+            "warmup_chunks_excluded": min(self.warmup_chunks, self.chunks_processed),
+            "rtf_avg":               rtf_avg,
+            "latency_ms_avg":        latency_ms_avg,
+            "latency_ms_p50":        latency_ms_p50,
+            "latency_ms_p95":        latency_ms_p95,
+            "latency_ms_p99":        latency_ms_p99,
+            "latency_ms_max":        latency_ms_max,
+            "drops_input":           self.drops_input,
+            "drops_output":          self.drops_output,
+            "underruns":             self.underruns,
+            "nan_count":             self.nan_count,
+            "clip_ratio":            clip_ratio,
+            "rms_in":                rms_in,
+            "rms_out":               rms_out,
+        }
 
     def _save_debug_files(self):
         """Save accumulated debug audio to files."""
@@ -711,13 +845,12 @@ class FileBasedTest:
         embedding = embedding.astype(np.float32).reshape(1, 1, -1)
         self.embedding = torch.from_numpy(embedding).to(self.device)
 
-    def process_file(self, input_path: Path, output_path: Path) -> None:
+    def process_file(self, input_path: Path, output_path: Path, warmup_chunks: int = 10) -> dict:
         """
         Process an audio file chunk-by-chunk, simulating real-time behavior.
 
-        This validates that streaming inference produces correct results.
+        Returns a stats dict conforming to the JSON report schema.
         """
-        import soundfile as sf
         import resampy
 
         print(f"Processing {input_path} -> {output_path}")
@@ -735,32 +868,31 @@ class FileBasedTest:
         # Reset state for fresh processing
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
 
-        # Process chunk by chunk
-        output_chunks = []
         num_chunks = audio.shape[0] // self.chunk_size
         stft_pad_size = self.model.stft_pad_size
 
         # Pre-allocate reusable tensors
         input_buffer = torch.zeros(1, 2, self.chunk_size, device=self.device, dtype=torch.float32)
-        la_buffer = torch.zeros(1, 2, stft_pad_size, device=self.device, dtype=torch.float32)
+        la_buffer    = torch.zeros(1, 2, stft_pad_size,   device=self.device, dtype=torch.float32)
 
-        processing_times = []
+        output_chunks: list[np.ndarray] = []
+        post_warmup_times: list[float]  = []
+        post_warmup_inputs:  list[np.ndarray] = []
+        post_warmup_outputs: list[np.ndarray] = []
+        nan_count = 0
+
         for i in range(num_chunks):
             start = i * self.chunk_size
-            end = start + self.chunk_size
+            end   = start + self.chunk_size
             chunk = audio[start:end]  # [chunk_size, 2]
 
-            start_time = time.perf_counter()
-
-            # Reuse pre-allocated input tensor
+            t0 = time.perf_counter()
             input_buffer.copy_(torch.from_numpy(chunk.T).unsqueeze(0))
 
-            # Get real lookahead audio from file (next stft_pad_size samples)
             la_tensor = None
             la_end = end + stft_pad_size
             if la_end <= len(audio):
-                lookahead = audio[end:la_end]  # [stft_pad_size, 2]
-                la_buffer.copy_(torch.from_numpy(lookahead.T).unsqueeze(0))
+                la_buffer.copy_(torch.from_numpy(audio[end:la_end].T).unsqueeze(0))
                 la_tensor = la_buffer
 
             with torch.inference_mode():
@@ -769,27 +901,79 @@ class FileBasedTest:
                     self.embedding[:, 0],
                     self.state,
                     pad=True,
-                    lookahead_audio=la_tensor
+                    lookahead_audio=la_tensor,
                 )
 
-            output_audio = output.squeeze(0).cpu().numpy().T
-            output_audio = np.clip(output_audio, -1.0, 1.0)
+            out = np.clip(output.squeeze(0).cpu().numpy().T, -1.0, 1.0)
+            elapsed = time.perf_counter() - t0
 
-            elapsed = time.perf_counter() - start_time
-            processing_times.append(elapsed)
+            # NaN tracking: always, from chunk 0 (NaNs during warmup are bugs too)
+            nan_count += int(np.isnan(out).sum())
 
-            output_chunks.append(output_audio)
+            if i >= warmup_chunks:
+                post_warmup_times.append(elapsed)
+                post_warmup_inputs.append(chunk)
+                post_warmup_outputs.append(out)
+
+            output_chunks.append(out)
 
             if (i + 1) % 100 == 0:
-                print(f"Processed {i + 1}/{num_chunks} chunks")
+                print(f"  {i + 1}/{num_chunks} chunks")
 
-        # Concatenate and save
-        output_audio = np.concatenate(output_chunks, axis=0)
-        sf.write(str(output_path), output_audio, self.sample_rate)
+        # Save full output
+        sf.write(str(output_path), np.concatenate(output_chunks, axis=0), self.sample_rate)
 
-        avg_time = np.mean(processing_times) * 1000
-        chunk_duration = self.chunk_size / self.sample_rate * 1000
-        print(f"Done! Avg processing time: {avg_time:.2f}ms per {chunk_duration:.1f}ms chunk (RTF: {avg_time/chunk_duration:.3f})")
+        # Aggregate post-warmup metrics
+        chunk_duration_ms = self.chunk_size / self.sample_rate * 1000
+        actual_warmup = min(warmup_chunks, num_chunks)
+
+        if post_warmup_times:
+            pw_ms = np.array(post_warmup_times) * 1000
+            rtf_avg        = float(np.mean(pw_ms) / chunk_duration_ms)
+            latency_ms_avg = float(np.mean(pw_ms))
+            latency_ms_p50 = float(np.percentile(pw_ms, 50))
+            latency_ms_p95 = float(np.percentile(pw_ms, 95))
+            latency_ms_p99 = float(np.percentile(pw_ms, 99))
+            latency_ms_max = float(np.max(pw_ms))
+        else:
+            rtf_avg = latency_ms_avg = latency_ms_p50 = latency_ms_p95 = latency_ms_p99 = latency_ms_max = 0.0
+
+        if post_warmup_inputs:
+            inp = np.concatenate(post_warmup_inputs)
+            out_all = np.concatenate(post_warmup_outputs)
+            rms_in     = float(np.sqrt(np.mean(inp.astype(np.float64) ** 2)))
+            rms_out    = float(np.sqrt(np.mean(out_all.astype(np.float64) ** 2)))
+            clip_ratio = float(np.mean(np.abs(out_all) >= 1.0))
+        else:
+            rms_in = rms_out = clip_ratio = 0.0
+
+        print(f"Done! avg={latency_ms_avg:.2f}ms  RTF={rtf_avg:.3f}  "
+              f"nan={nan_count}  clip={clip_ratio:.4f}")
+
+        return {
+            "mode":                  "file",
+            "timestamp":             datetime.now(timezone.utc).isoformat(),
+            "host_id":               socket.gethostname(),
+            "device":                str(self.device),
+            "sample_rate":           self.sample_rate,
+            "chunk_size":            self.chunk_size,
+            "stft_pad_size_samples": stft_pad_size,
+            "chunks":                num_chunks,
+            "warmup_chunks_excluded": actual_warmup,
+            "rtf_avg":               rtf_avg,
+            "latency_ms_avg":        latency_ms_avg,
+            "latency_ms_p50":        latency_ms_p50,
+            "latency_ms_p95":        latency_ms_p95,
+            "latency_ms_p99":        latency_ms_p99,
+            "latency_ms_max":        latency_ms_max,
+            "drops_input":           0,
+            "drops_output":          0,
+            "underruns":             0,
+            "nan_count":             nan_count,
+            "clip_ratio":            clip_ratio,
+            "rms_in":                rms_in,
+            "rms_out":               rms_out,
+        }
 
 
 def main():
@@ -841,6 +1025,35 @@ Examples:
         help="Path to input audio file for file-based test mode"
     )
 
+    # Eval arguments
+    parser.add_argument(
+        "--report",
+        type=Path,
+        default=None,
+        help="Write JSON eval report to this path after the run"
+    )
+    parser.add_argument(
+        "--threshold-profile",
+        type=str,
+        default=None,
+        metavar="PROFILE",
+        help="Evaluate stats against this profile in thresholds.yaml (e.g. dev, target)"
+    )
+    parser.add_argument(
+        "--warmup-chunks",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Exclude first N chunks from metric aggregation (default: 10)"
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Stop live mode after this many seconds and write report"
+    )
+
     # Utility arguments
     parser.add_argument(
         "--list-devices",
@@ -883,6 +1096,11 @@ Examples:
     if config.model.embedding is None and not config.debug.passthrough:
         parser.error("embedding is required (set in config.yaml)")
 
+    # Load threshold profile once (fail fast if misconfigured)
+    profile_thresholds: dict = {}
+    if args.threshold_profile:
+        profile_thresholds = _load_threshold_profile(args.threshold_profile)
+
     # Determine mode: file-based test or real-time
     if config.test.enabled:
         # File-based testing mode
@@ -892,11 +1110,30 @@ Examples:
             config.test.output_file = SCRIPT_DIR / (config.test.input_file.stem + ".enhanced.wav")
 
         tester = FileBasedTest(config)
-        tester.process_file(config.test.input_file, config.test.output_file)
+        stats = tester.process_file(
+            config.test.input_file,
+            config.test.output_file,
+            warmup_chunks=args.warmup_chunks,
+        )
+        mode = "file"
     else:
         # Real-time mode
         engine = RealtimeInference(config)
-        engine.run()
+        engine.warmup_chunks = args.warmup_chunks
+        stats = engine.run(duration=args.duration)
+        mode = "live"
+
+    # Report and threshold evaluation
+    failed: list[str] = []
+    if profile_thresholds:
+        failed = _evaluate_thresholds(stats, profile_thresholds, mode)
+
+    if args.report:
+        _write_report(stats, args.report, failed)
+
+    if failed:
+        print(f"Exiting non-zero: {len(failed)} threshold(s) failed.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
