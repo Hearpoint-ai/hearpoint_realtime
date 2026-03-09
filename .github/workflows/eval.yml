@@ -23,7 +23,8 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy soundfile sounddevice pyyaml asteroid-filterbanks espnet
+          pip install numpy soundfile sounddevice pyyaml resemblyzer \
+                      asteroid-filterbanks espnet
 
       - name: Validate config import
         run: |
@@ -65,7 +66,10 @@ jobs:
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install numpy soundfile sounddevice pyyaml resampy \
-                      asteroid-filterbanks espnet
+                      resemblyzer asteroid-filterbanks espnet
+
+      - name: Build eval fixture
+        run: make make-fixture PYTHON=python EMBEDDING_MODEL=resemblyzer
 
       - name: Run eval-fast
         run: make eval-fast PYTHON=python
