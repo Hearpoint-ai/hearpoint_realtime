@@ -1,0 +1,77 @@
+name: Eval
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: Smoke (no weights)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libportaudio2
+
+      - name: Install Python dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy soundfile sounddevice pyyaml asteroid-filterbanks espnet
+
+      - name: Validate config import
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, 'src/realtime')
+          from realtime_inference import Config
+          Config.from_yaml('src/realtime/config.yaml')
+          print('Config loaded OK')
+          "
+
+      - name: Assert --embedding and --test-file in --help
+        run: |
+          output=$(python src/realtime/realtime_inference.py --help 2>&1)
+          echo "$output"
+          echo "$output" | grep -q -- '--embedding' \
+            || (echo "FAIL: --embedding missing from --help" && exit 1)
+          echo "$output" | grep -q -- '--test-file' \
+            || (echo "FAIL: --test-file missing from --help" && exit 1)
+          echo "Help flags OK"
+
+  eval:
+    name: Eval (with weights)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libportaudio2
+
+      - name: Install Python dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy soundfile sounddevice pyyaml resampy \
+                      asteroid-filterbanks espnet
+
+      - name: Run eval-fast
+        run: make eval-fast PYTHON=python
+
+      - name: Upload eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: reports/eval/
