@@ -1,4 +1,4 @@
-.PHONY: eval-fast eval-live make-fixture enroll enroll-record
+.PHONY: eval-fast eval-live make-fixture enroll enroll-record demo
 
 PYTHON ?= /opt/miniconda3/envs/hearpoint-realtime/bin/python
 NAME ?= User
@@ -45,3 +45,6 @@ enroll:
 #   make enroll-record NAME=Hady DURATION=5 EMBEDDING_MODEL=tfgridnet
 enroll-record:
 	$(PYTHON) scripts/enroll.py --name "$(NAME)" --record --duration "$(DURATION)" --embedding-model "$(EMBEDDING_MODEL)"
+
+demo:
+	$(PYTHON) scripts/demo.py

@@ -331,43 +331,39 @@ class RealtimeInference:
 
         if self.passthrough_mode:
             print("*** PASSTHROUGH MODE - bypassing model ***")
-            self.model = None
-            self.embedding = None
-            self.state = None
-            self.stft_pad_size = 0
-            self._compiled = False
-            self._input_buffer = None
-            self._lookahead_buffer = None
-        else:
-            # Load model
-            self._load_model(config.get_checkpoint_path(), config.get_model_config_path())
 
-            # Load speaker embedding
-            if config.model.embedding is None:
-                raise ValueError("Speaker embedding path is required")
+        # Always load model (needed for toggling passthrough→isolation at runtime)
+        self._load_model(config.get_checkpoint_path(), config.get_model_config_path())
+        self.state = self.model.init_buffers(batch_size=1, device=self.device)
+        self.stft_pad_size = self.model.stft_pad_size
+
+        # Load speaker embedding if provided (may be None for demo startup)
+        if config.model.embedding is not None:
             self._load_embedding(config.model.embedding)
+        else:
+            self.embedding = None
 
-            # Initialize model state buffers
-            self.state = self.model.init_buffers(batch_size=1, device=self.device)
-            self.stft_pad_size = self.model.stft_pad_size
+        # --- Optimization: compile, pre-allocated tensors ---
+        self._compiled = False
+        if config.optimization.use_torch_compile:
+            try:
+                self.model = torch.compile(self.model, mode="reduce-overhead")
+                self._compiled = True
+                print("torch.compile enabled (reduce-overhead)")
+            except Exception as e:
+                print(f"torch.compile not available ({e}), continuing without it")
 
-            # --- Optimization: compile, pre-allocated tensors ---
-            self._compiled = False
-            if config.optimization.use_torch_compile:
-                try:
-                    self.model = torch.compile(self.model, mode="reduce-overhead")
-                    self._compiled = True
-                    print("torch.compile enabled (reduce-overhead)")
-                except Exception as e:
-                    print(f"torch.compile not available ({e}), continuing without it")
+        # Pre-allocate reusable tensors
+        self._input_buffer = torch.zeros(
+            1, 2, self.chunk_size, device=self.device, dtype=torch.float32
+        )
+        self._lookahead_buffer = torch.zeros(
+            1, 2, self.stft_pad_size, device=self.device, dtype=torch.float32
+        )
 
-            # Pre-allocate reusable tensors
-            self._input_buffer = torch.zeros(
-                1, 2, self.chunk_size, device=self.device, dtype=torch.float32
-            )
-            self._lookahead_buffer = torch.zeros(
-                1, 2, self.stft_pad_size, device=self.device, dtype=torch.float32
-            )
+        # Enrollment capture buffer
+        self._enrollment_buffer = None
+        self._enrollment_lock = threading.Lock()
 
         # Input accumulator for collecting enough samples before processing
         self.input_accumulator = np.zeros((0, self.input_channels), dtype=np.float32)
@@ -483,8 +479,8 @@ class RealtimeInference:
         with self.input_level_lock:
             self.recent_input_level = np.abs(audio_chunk).max()
 
-        # Passthrough mode: bypass model entirely
-        if self.passthrough_mode:
+        # Passthrough mode or no embedding: bypass model entirely
+        if self.passthrough_mode or self.embedding is None:
             audio_chunk = _ensure_stereo(audio_chunk)
             if self.output_channels == 1:
                 output_audio = audio_chunk.mean(axis=1, keepdims=True)
@@ -579,6 +575,36 @@ class RealtimeInference:
 
         return output_audio
 
+    def set_passthrough(self, enabled: bool) -> None:
+        """Toggle passthrough mode at runtime. GIL-atomic bool assignment."""
+        self.passthrough_mode = enabled
+        if not enabled:
+            # Reset model state for clean start when switching to isolation
+            self.state = self.model.init_buffers(batch_size=1, device=self.device)
+
+    def set_embedding(self, embedding_np: np.ndarray) -> None:
+        """Swap speaker embedding at runtime. GIL-atomic reference swap."""
+        emb = embedding_np.astype(np.float32).reshape(1, 1, -1)
+        self.embedding = torch.from_numpy(emb).to(self.device)
+        # Reset model recurrent state for new speaker
+        self.state = self.model.init_buffers(batch_size=1, device=self.device)
+
+    def start_enrollment_capture(self, duration_s: float) -> None:
+        """Begin accumulating input audio for enrollment."""
+        with self._enrollment_lock:
+            self._enrollment_buffer = {
+                "audio": [], "max_samples": int(duration_s * self.sample_rate), "collected": 0
+            }
+
+    def stop_enrollment_capture(self) -> np.ndarray | None:
+        """Stop capture, return [N, channels] audio or None."""
+        with self._enrollment_lock:
+            buf = self._enrollment_buffer
+            self._enrollment_buffer = None
+        if buf is None or not buf["audio"]:
+            return None
+        return np.concatenate(buf["audio"], axis=0)
+
     def _input_callback(self, indata, frames, time_info, status):
         """Callback for audio input stream."""
         if status:
@@ -590,6 +616,16 @@ class RealtimeInference:
                 self.input_queue.put_nowait(indata.copy())
             except queue.Full:
                 self.drops_input += 1
+
+            # Capture audio for enrollment if active
+            with self._enrollment_lock:
+                if self._enrollment_buffer is not None:
+                    buf = self._enrollment_buffer
+                    if buf["collected"] < buf["max_samples"]:
+                        remaining = buf["max_samples"] - buf["collected"]
+                        chunk = indata[:remaining].copy()
+                        buf["audio"].append(chunk)
+                        buf["collected"] += len(chunk)
 
     def _output_callback(self, outdata, frames, time_info, status):
         """Callback for audio output stream."""
@@ -662,17 +698,8 @@ class RealtimeInference:
         print(f"\nDefault input device: {sd.default.device[0]}")
         print(f"Default output device: {sd.default.device[1]}")
 
-    def run(self, duration: float | None = None) -> dict:
-        """Start real-time processing. Returns a stats dict."""
-        print(f"\nStarting real-time inference...")
-        print(f"  Sample rate: {self.sample_rate} Hz")
-        print(f"  Chunk size: {self.chunk_size} samples ({self.chunk_size / self.sample_rate * 1000:.1f} ms)")
-        print(f"  Input channels: {self.input_channels}")
-        print(f"  Output channels: {self.output_channels}")
-        print(f"  Input device: {self.input_device or 'default'}")
-        print(f"  Output device: {self.output_device or 'default'}")
-        print(f"  torch.compile: {'enabled' if self._compiled else 'disabled'}")
-
+    def start(self) -> None:
+        """Open audio streams and start processing. Non-blocking."""
         self.running = True
 
         # Pre-fill output queue with silence to prevent initial underruns
@@ -680,105 +707,37 @@ class RealtimeInference:
         for _ in range(self.buffer_size_chunks * 2):
             self.output_queue.put(silence)
 
-        # Start processing thread
-        process_thread = threading.Thread(target=self._processing_thread, daemon=True)
-        process_thread.start()
+        self._process_thread = threading.Thread(target=self._processing_thread, daemon=True)
+        self._process_thread.start()
 
-        # Configure streams
-        # Use slightly larger block size for input to reduce callback overhead
         input_blocksize = self.chunk_size * self.buffer_size_chunks
-        output_blocksize = self.chunk_size
+        self._input_stream = sd.InputStream(
+            device=self.input_device, samplerate=self.sample_rate,
+            channels=self.input_channels, dtype=np.float32,
+            blocksize=input_blocksize, callback=self._input_callback)
+        self._output_stream = sd.OutputStream(
+            device=self.output_device, samplerate=self.sample_rate,
+            channels=self.output_channels, dtype=np.float32,
+            blocksize=self.chunk_size, callback=self._output_callback)
+        self._input_stream.start()
+        self._output_stream.start()
 
-        try:
-            with sd.InputStream(
-                device=self.input_device,
-                samplerate=self.sample_rate,
-                channels=self.input_channels,
-                dtype=np.float32,
-                blocksize=input_blocksize,
-                callback=self._input_callback,
-            ), sd.OutputStream(
-                device=self.output_device,
-                samplerate=self.sample_rate,
-                channels=self.output_channels,
-                dtype=np.float32,
-                blocksize=output_blocksize,
-                callback=self._output_callback,
-            ):
-                print("\nProcessing... Press Ctrl+C to stop.\n")
-
-                # Main loop - print stats periodically
-                run_start = time.perf_counter()
-                while self.running:
-                    time.sleep(1.0)
-                    if duration is not None and (time.perf_counter() - run_start) >= duration:
-                        self.running = False
-                        break
-                    if self.processing_times:
-                        recent = self.processing_times[-100:]
-                        recent_ms = np.array(recent) * 1000
-                        chunk_duration = self.chunk_size / self.sample_rate * 1000
-                        avg_time = np.mean(recent_ms)
-                        p50 = np.percentile(recent_ms, 50)
-                        p95 = np.percentile(recent_ms, 95)
-                        p99 = np.percentile(recent_ms, 99)
-                        rtf = avg_time / chunk_duration
-
-                        # Get input level for visualization
-                        with self.input_level_lock:
-                            level = self.recent_input_level
-
-                        # Convert to dB and create visual meter
-                        level_db = 20 * np.log10(level + 1e-10)
-                        bars = int(max(0, min(30, (level_db + 60) / 2)))  # -60dB to 0dB range
-                        level_meter = f"[{'=' * bars}{' ' * (30 - bars)}] {level_db:5.1f}dB"
-
-                        stats = (f"Chunks: {self.chunks_processed:6d} | "
-                                 f"Avg: {avg_time:5.2f}ms | "
-                                 f"p50: {p50:5.2f} p95: {p95:5.2f} p99: {p99:5.2f} | "
-                                 f"RTF: {rtf:.3f} | "
-                                 f"Q: {self.input_queue.qsize()}/{self.output_queue.qsize()} | "
-                                 f"Level: {level_meter}")
-
-                        if self.drops_input or self.drops_output or self.underruns:
-                            stats += (f" | Drops(in/out): {self.drops_input}/{self.drops_output} "
-                                      f"Underruns: {self.underruns}")
-
-                        print(stats)
-
-        except KeyboardInterrupt:
-            print("\nStopping...")
-        finally:
-            self.running = False
-            process_thread.join(timeout=1.0)
-
-        # Save debug files if requested
-        if self.save_debug_dir and self.debug_inputs:
+    def stop(self) -> dict:
+        """Stop streams, join threads, return stats dict."""
+        self.running = False
+        if hasattr(self, '_process_thread'):
+            self._process_thread.join(timeout=2.0)
+        for stream_attr in ('_input_stream', '_output_stream'):
+            s = getattr(self, stream_attr, None)
+            if s is not None:
+                s.stop()
+                s.close()
+        if self.save_debug_dir and hasattr(self, 'debug_inputs') and self.debug_inputs:
             self._save_debug_files()
+        return self._build_stats()
 
-        # Print final statistics
-        if self.processing_times:
-            all_ms = np.array(self.processing_times) * 1000
-            chunk_duration = self.chunk_size / self.sample_rate * 1000
-            print(f"\nFinal Statistics:")
-            print(f"  Total chunks: {self.chunks_processed}")
-            print(f"  Processing (ms) — avg: {np.mean(all_ms):.2f}  "
-                  f"p50: {np.percentile(all_ms, 50):.2f}  "
-                  f"p95: {np.percentile(all_ms, 95):.2f}  "
-                  f"p99: {np.percentile(all_ms, 99):.2f}  "
-                  f"max: {np.max(all_ms):.2f}")
-            if self.inference_times:
-                inf_ms = np.array(self.inference_times) * 1000
-                prep_ms = np.array(self.prep_times) * 1000
-                post_ms = np.array(self.post_times) * 1000
-                print(f"  Breakdown (ms avg) — prep: {np.mean(prep_ms):.2f}  "
-                      f"infer: {np.mean(inf_ms):.2f}  "
-                      f"post: {np.mean(post_ms):.2f}")
-            print(f"  RTF: {np.mean(all_ms) / chunk_duration:.3f}")
-            print(f"  Drops (input/output): {self.drops_input}/{self.drops_output}  "
-                  f"Underruns: {self.underruns}")
-
-        # Build and return stats dict
+    def _build_stats(self) -> dict:
+        """Build and return stats dict from accumulated metrics."""
         chunk_duration_ms = self.chunk_size / self.sample_rate * 1000
         pw_times = self.processing_times[self.warmup_chunks:]
         if pw_times:
@@ -821,6 +780,88 @@ class RealtimeInference:
             "rms_in":                rms_in,
             "rms_out":               rms_out,
         }
+
+    def run(self, duration: float | None = None) -> dict:
+        """Start real-time processing. Returns a stats dict."""
+        print(f"\nStarting real-time inference...")
+        print(f"  Sample rate: {self.sample_rate} Hz")
+        print(f"  Chunk size: {self.chunk_size} samples ({self.chunk_size / self.sample_rate * 1000:.1f} ms)")
+        print(f"  Input channels: {self.input_channels}")
+        print(f"  Output channels: {self.output_channels}")
+        print(f"  Input device: {self.input_device or 'default'}")
+        print(f"  Output device: {self.output_device or 'default'}")
+        print(f"  torch.compile: {'enabled' if self._compiled else 'disabled'}")
+
+        self.start()
+
+        try:
+            print("\nProcessing... Press Ctrl+C to stop.\n")
+
+            # Main loop - print stats periodically
+            run_start = time.perf_counter()
+            while self.running:
+                time.sleep(1.0)
+                if duration is not None and (time.perf_counter() - run_start) >= duration:
+                    self.running = False
+                    break
+                if self.processing_times:
+                    recent = self.processing_times[-100:]
+                    recent_ms = np.array(recent) * 1000
+                    chunk_duration = self.chunk_size / self.sample_rate * 1000
+                    avg_time = np.mean(recent_ms)
+                    p50 = np.percentile(recent_ms, 50)
+                    p95 = np.percentile(recent_ms, 95)
+                    p99 = np.percentile(recent_ms, 99)
+                    rtf = avg_time / chunk_duration
+
+                    # Get input level for visualization
+                    with self.input_level_lock:
+                        level = self.recent_input_level
+
+                    # Convert to dB and create visual meter
+                    level_db = 20 * np.log10(level + 1e-10)
+                    bars = int(max(0, min(30, (level_db + 60) / 2)))  # -60dB to 0dB range
+                    level_meter = f"[{'=' * bars}{' ' * (30 - bars)}] {level_db:5.1f}dB"
+
+                    stats = (f"Chunks: {self.chunks_processed:6d} | "
+                             f"Avg: {avg_time:5.2f}ms | "
+                             f"p50: {p50:5.2f} p95: {p95:5.2f} p99: {p99:5.2f} | "
+                             f"RTF: {rtf:.3f} | "
+                             f"Q: {self.input_queue.qsize()}/{self.output_queue.qsize()} | "
+                             f"Level: {level_meter}")
+
+                    if self.drops_input or self.drops_output or self.underruns:
+                        stats += (f" | Drops(in/out): {self.drops_input}/{self.drops_output} "
+                                  f"Underruns: {self.underruns}")
+
+                    print(stats)
+
+        except KeyboardInterrupt:
+            print("\nStopping...")
+
+        # Print final statistics
+        if self.processing_times:
+            all_ms = np.array(self.processing_times) * 1000
+            chunk_duration = self.chunk_size / self.sample_rate * 1000
+            print(f"\nFinal Statistics:")
+            print(f"  Total chunks: {self.chunks_processed}")
+            print(f"  Processing (ms) — avg: {np.mean(all_ms):.2f}  "
+                  f"p50: {np.percentile(all_ms, 50):.2f}  "
+                  f"p95: {np.percentile(all_ms, 95):.2f}  "
+                  f"p99: {np.percentile(all_ms, 99):.2f}  "
+                  f"max: {np.max(all_ms):.2f}")
+            if self.inference_times:
+                inf_ms = np.array(self.inference_times) * 1000
+                prep_ms = np.array(self.prep_times) * 1000
+                post_ms = np.array(self.post_times) * 1000
+                print(f"  Breakdown (ms avg) — prep: {np.mean(prep_ms):.2f}  "
+                      f"infer: {np.mean(inf_ms):.2f}  "
+                      f"post: {np.mean(post_ms):.2f}")
+            print(f"  RTF: {np.mean(all_ms) / chunk_duration:.3f}")
+            print(f"  Drops (input/output): {self.drops_input}/{self.drops_output}  "
+                  f"Underruns: {self.underruns}")
+
+        return self.stop()
 
     def _save_debug_files(self):
         """Save accumulated debug audio to files."""
