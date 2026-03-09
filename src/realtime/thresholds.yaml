@@ -7,6 +7,10 @@ dev:
   drops_input: 0       # live only
   drops_output: 0      # live only
   underruns: 0         # live only
+  # --- quality (file mode, always computed) ---
+  cosine_similarity_delta: 0.0
+  # --- quality (file mode, only when --reference-file provided) ---
+  si_sdr_improvement: 0.0
 
 target:
   rtf_avg: 0.8
@@ -15,3 +19,5 @@ target:
   drops_input: 0       # live only
   drops_output: 0      # live only
   underruns: 0         # live only
+  cosine_similarity_delta: 0.05
+  si_sdr_improvement: 2.0

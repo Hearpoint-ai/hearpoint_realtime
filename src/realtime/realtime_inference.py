@@ -61,6 +61,7 @@ _THRESHOLD_OPS: dict[str, str] = {
     "rtf_avg":                 "<",
     "clip_ratio":              "<=",
     "cosine_similarity_delta": ">=",
+    "si_sdr_improvement":      ">=",
 }
 
 # Excluded from threshold evaluation in file mode (always stub-zero)
@@ -86,6 +87,8 @@ def _evaluate_thresholds(stats: dict, profile_thresholds: dict, mode: str) -> li
             continue
         op = _THRESHOLD_OPS.get(metric, "==")
         actual = stats[metric]
+        if actual is None:
+            continue                           # skip optional metrics absent from this run
         if   op == "==" and actual != limit:      failed.append(metric)
         elif op == "<"  and not (actual < limit):  failed.append(metric)
         elif op == "<=" and not (actual <= limit): failed.append(metric)
@@ -120,6 +123,29 @@ def _ensure_stereo(audio: np.ndarray) -> np.ndarray:
     if audio.shape[1] == 1:
         audio = np.concatenate([audio, audio], axis=1)
     return audio.astype(np.float32)
+
+
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    a, b = a.flatten().astype(np.float64), b.flatten().astype(np.float64)
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
+
+
+def _si_sdr(reference: np.ndarray, estimate: np.ndarray) -> float:
+    """SI-SDR in dB for a single channel [N]."""
+    ref = reference.astype(np.float64) - reference.mean()
+    est = estimate.astype(np.float64) - estimate.mean()
+    alpha      = np.dot(est, ref) / (np.dot(ref, ref) + 1e-8)
+    target     = alpha * ref
+    noise      = est - target
+    target_pow = np.dot(target, target)
+    noise_pow  = np.dot(noise, noise)
+    # Add 1e-10 offset after ratio so that zero-estimate → -100 dB, not 0 dB
+    return float(10 * np.log10(target_pow / (noise_pow + 1e-8) + 1e-10))
+
+
+def _si_sdr_stereo(reference: np.ndarray, estimate: np.ndarray) -> float:
+    """Mean SI-SDR across channels. Inputs: [N, 2]."""
+    return float(np.mean([_si_sdr(reference[:, c], estimate[:, c]) for c in range(2)]))
 
 
 @dataclass
@@ -857,11 +883,14 @@ class FileBasedTest:
 
     def _load_embedding(self, embedding_path: Path) -> None:
         """Load speaker embedding from .npy file."""
+        self.embedding_path = embedding_path
         embedding = np.load(embedding_path)
         embedding = embedding.astype(np.float32).reshape(1, 1, -1)
         self.embedding = torch.from_numpy(embedding).to(self.device)
 
-    def process_file(self, input_path: Path, output_path: Path, warmup_chunks: int = 10) -> dict:
+    def process_file(self, input_path: Path, output_path: Path,
+                     warmup_chunks: int = 10,
+                     reference_path: Path | None = None) -> dict:
         """
         Process an audio file chunk-by-chunk, simulating real-time behavior.
 
@@ -964,6 +993,46 @@ class FileBasedTest:
         print(f"Done! avg={latency_ms_avg:.2f}ms  RTF={rtf_avg:.3f}  "
               f"nan={nan_count}  clip={clip_ratio:.4f}")
 
+        # --- Cosine similarity ---
+        sidecar_path = self.embedding_path.with_suffix(".meta.json")
+        if not sidecar_path.exists():
+            raise FileNotFoundError(
+                f"Embedding sidecar not found: {sidecar_path}\n"
+                f"Re-enroll with updated enroll.py or regenerate fixture with make_fixture.py"
+            )
+        sidecar = json.loads(sidecar_path.read_text())
+        expected_class = "TFGridNetSpeakerEmbeddingModel"
+        if sidecar.get("embedding_model_class") != expected_class:
+            raise ValueError(
+                f"Embedding class mismatch: sidecar={sidecar.get('embedding_model_class')!r}, "
+                f"expected={expected_class!r}"
+            )
+
+        from src.ml.TFGridNetSpeakerEmbeddingModel import TFGridNetSpeakerEmbeddingModel
+        emb_model  = TFGridNetSpeakerEmbeddingModel()
+        emb_input  = emb_model.compute_embedding(input_path)
+        emb_output = emb_model.compute_embedding(output_path)
+        target_emb = self.embedding.squeeze().cpu().numpy()
+
+        cos_before = _cosine_similarity(emb_input,  target_emb)
+        cos_after  = _cosine_similarity(emb_output, target_emb)
+        cos_delta  = cos_after - cos_before
+
+        # --- SI-SDR (only when --reference-file provided) ---
+        if reference_path is not None and post_warmup_inputs:
+            import resampy as _resampy
+            ref_audio, ref_sr = sf.read(str(reference_path), always_2d=True)
+            if ref_sr != self.sample_rate:
+                ref_audio = _resampy.resample(ref_audio.T, ref_sr, self.sample_rate).T
+            ref_audio   = _ensure_stereo(ref_audio)
+            ref_trimmed = ref_audio[actual_warmup * self.chunk_size : num_chunks * self.chunk_size]
+            n_ref = min(len(ref_trimmed), len(inp))
+            si_sdr_in  = _si_sdr_stereo(ref_trimmed[:n_ref], inp[:n_ref])
+            si_sdr_out = _si_sdr_stereo(ref_trimmed[:n_ref], out_all[:n_ref])
+            si_sdr_i   = si_sdr_out - si_sdr_in
+        else:
+            si_sdr_in = si_sdr_out = si_sdr_i = None
+
         return {
             "mode":                  "file",
             "timestamp":             datetime.now(timezone.utc).isoformat(),
@@ -987,6 +1056,12 @@ class FileBasedTest:
             "clip_ratio":            clip_ratio,
             "rms_in":                rms_in,
             "rms_out":               rms_out,
+            "cosine_similarity_before": cos_before,
+            "cosine_similarity_after":  cos_after,
+            "cosine_similarity_delta":  cos_delta,
+            "si_sdr_input":             si_sdr_in,
+            "si_sdr_output":            si_sdr_out,
+            "si_sdr_improvement":       si_sdr_i,
         }
 
 
@@ -1061,6 +1136,12 @@ Examples:
         help="Exclude first N chunks from metric aggregation (default: 10)"
     )
     parser.add_argument(
+        "--reference-file",
+        type=Path,
+        default=None,
+        help="Clean reference audio for SI-SDR computation (optional; enables si_sdr_* metrics)"
+    )
+    parser.add_argument(
         "--duration",
         type=float,
         default=None,
@@ -1128,6 +1209,7 @@ Examples:
             config.test.input_file,
             config.test.output_file,
             warmup_chunks=args.warmup_chunks,
+            reference_path=args.reference_file,
         )
         mode = "file"
     else:

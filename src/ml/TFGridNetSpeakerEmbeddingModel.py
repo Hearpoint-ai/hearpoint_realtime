@@ -12,7 +12,7 @@ from ..models.tfgridnet_enrollment.tfgridnet import EmbedTFGridNet
 from ..utils import get_torch_device
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = BACKEND_DIR / "configs" / "tfgridnet_enroll_cipic.json"
+DEFAULT_CONFIG_PATH = BACKEND_DIR / "src" / "configs" / "tfgridnet_enroll_cipic.json"
 DEFAULT_CHECKPOINT_PATH = BACKEND_DIR / "weights" / "tfgridnet_enroll.ckpt"
 
 class TFGridNetSpeakerEmbeddingModel(SpeakerEmbeddingModel):

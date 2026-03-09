@@ -19,10 +19,10 @@ audio:
 
   # Input device index (null for system default)
   # Run with --list-devices to see available devices
-  input_device: null
+  input_device: 1
 
   # Output device index (null for system default)
-  output_device: null
+  output_device: 2
 
   # Number of input channels (1 for mono mic, 2 for stereo mic)
   input_channels: 1
@@ -39,7 +39,7 @@ audio:
 # =============================================================================
 debug:
   # Enable verbose debug logging (prints input/output stats per chunk)
-  verbose: true
+  verbose: false
 
   # Bypass the model entirely - pass audio through unchanged
   # Useful for testing audio I/O pipeline

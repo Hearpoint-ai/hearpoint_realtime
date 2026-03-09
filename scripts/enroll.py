@@ -117,6 +117,11 @@ def main():
     dest_embedding = ENROLLMENTS_DIR / f"{speaker_id}.npy"
     np.save(dest_embedding, embedding)
 
+    # Write sidecar so eval harness can validate embedding model
+    import json as _json
+    sidecar = {"embedding_model_class": "TFGridNetSpeakerEmbeddingModel", "sample_rate": SAMPLE_RATE}
+    dest_embedding.with_suffix(".meta.json").write_text(_json.dumps(sidecar, indent=2))
+
     # Update data.json
     from src.models import Speaker
     from src.persistence import MediaJsonStore
