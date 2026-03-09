@@ -107,6 +107,21 @@ def _write_report(stats: dict, report_path: Path, failed_thresholds: list[str]) 
         print(f"THRESHOLD FAILURES: {failed_thresholds}")
 
 
+def _ensure_stereo(audio: np.ndarray) -> np.ndarray:
+    """Return audio as [N, 2] float32, duplicating channel 0 if mono.
+
+    Accepts:
+      [N]    — 1-D mono
+      [N, 1] — column-mono
+      [N, 2] — stereo (pass-through)
+    """
+    if audio.ndim == 1:
+        audio = audio[:, np.newaxis]
+    if audio.shape[1] == 1:
+        audio = np.concatenate([audio, audio], axis=1)
+    return audio.astype(np.float32)
+
+
 @dataclass
 class ModelConfig:
     """Model-related configuration."""
@@ -314,8 +329,8 @@ class RealtimeInference:
                 1, 2, self.stft_pad_size, device=self.device, dtype=torch.float32
             )
 
-        # Input accumulator for collecting enough samples before processing (stereo)
-        self.input_accumulator = np.zeros((0, 2), dtype=np.float32)
+        # Input accumulator for collecting enough samples before processing
+        self.input_accumulator = np.zeros((0, self.input_channels), dtype=np.float32)
 
         # Statistics
         self.chunks_processed = 0
@@ -430,6 +445,7 @@ class RealtimeInference:
 
         # Passthrough mode: bypass model entirely
         if self.passthrough_mode:
+            audio_chunk = _ensure_stereo(audio_chunk)
             if self.output_channels == 1:
                 output_audio = audio_chunk.mean(axis=1, keepdims=True)
             else:
@@ -456,11 +472,13 @@ class RealtimeInference:
 
         # --- Prep: numpy -> tensor ---
         t_prep = time.perf_counter()
+        audio_chunk = _ensure_stereo(audio_chunk)          # normalise to [chunk_size, 2]
         stereo_input = audio_chunk.T
         self._input_buffer.copy_(torch.from_numpy(stereo_input).unsqueeze(0))
 
         la_tensor = None
         if lookahead is not None and len(lookahead) > 0:
+            lookahead = _ensure_stereo(lookahead)          # normalise to [stft_pad_size, 2]
             stereo_la = lookahead.T
             self._lookahead_buffer.copy_(torch.from_numpy(stereo_la).unsqueeze(0))
             la_tensor = self._lookahead_buffer
@@ -557,20 +575,18 @@ class RealtimeInference:
                 # Get input audio (blocking with timeout)
                 indata = self.input_queue.get(timeout=0.1)
 
-                # Accumulate input samples (preserve stereo)
-                if indata.ndim > 1 and indata.shape[1] >= 2:
-                    stereo_input = indata[:, :2]
-                else:
-                    # Mono input: duplicate to stereo
-                    mono = indata[:, 0] if indata.ndim > 1 else indata.flatten()
-                    stereo_input = np.column_stack([mono, mono])
-                self.input_accumulator = np.concatenate([self.input_accumulator, stereo_input]) if len(self.input_accumulator) > 0 else stereo_input
+                # Keep only configured input channels; _process_chunk will ensure stereo
+                raw = indata[:, :self.input_channels] if indata.ndim > 1 else indata[:, np.newaxis]
+                self.input_accumulator = (
+                    np.concatenate([self.input_accumulator, raw])
+                    if len(self.input_accumulator) > 0 else raw
+                )
 
                 # Process complete chunks (need chunk + lookahead samples)
                 required_samples = self.chunk_size + self.stft_pad_size
 
                 while len(self.input_accumulator) >= required_samples:
-                    # Extract stereo chunk and lookahead [samples, 2]
+                    # Extract chunk and lookahead [samples, input_channels]; _process_chunk normalises to stereo
                     chunk = self.input_accumulator[:self.chunk_size].astype(np.float32)
                     lookahead = self.input_accumulator[self.chunk_size:required_samples].astype(np.float32)
                     # Advance by chunk_size only -- lookahead rolls into next chunk
@@ -860,10 +876,7 @@ class FileBasedTest:
         if sr != self.sample_rate:
             audio = resampy.resample(audio, sr, self.sample_rate)
 
-        # Ensure stereo
-        if audio.ndim == 1:
-            audio = np.column_stack([audio, audio])
-        audio = audio[:, :2].astype(np.float32)
+        audio = audio.astype(np.float32)
 
         # Reset state for fresh processing
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
@@ -884,7 +897,7 @@ class FileBasedTest:
         for i in range(num_chunks):
             start = i * self.chunk_size
             end   = start + self.chunk_size
-            chunk = audio[start:end]  # [chunk_size, 2]
+            chunk = _ensure_stereo(audio[start:end])  # always [chunk_size, 2]
 
             t0 = time.perf_counter()
             input_buffer.copy_(torch.from_numpy(chunk.T).unsqueeze(0))
@@ -892,7 +905,8 @@ class FileBasedTest:
             la_tensor = None
             la_end = end + stft_pad_size
             if la_end <= len(audio):
-                la_buffer.copy_(torch.from_numpy(audio[end:la_end].T).unsqueeze(0))
+                la_stereo = _ensure_stereo(audio[end:la_end])  # [stft_pad_size, 2]
+                la_buffer.copy_(torch.from_numpy(la_stereo.T).unsqueeze(0))
                 la_tensor = la_buffer
 
             with torch.inference_mode():

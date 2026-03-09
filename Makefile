@@ -1,7 +1,10 @@
 .PHONY: eval-fast eval-live
 
+PYTHON ?= /opt/miniconda3/envs/hearpoint-realtime/bin/python
+
 eval-fast:
-	python src/realtime/realtime_inference.py \
+	mkdir -p reports/eval
+	$(PYTHON) src/realtime/realtime_inference.py \
 	  --test-file media/mixtures/derron_mubashir.wav \
 	  --embedding media/enrollments/f75d8385-bedf-4082-babf-1825963c7e69.npy \
 	  --report reports/eval/$(shell date +%Y%m%dT%H%M%S).json \
@@ -9,7 +12,8 @@ eval-fast:
 	  --warmup-chunks 10
 
 eval-live:
-	python src/realtime/realtime_inference.py \
+	mkdir -p reports/eval
+	$(PYTHON) src/realtime/realtime_inference.py \
 	  --embedding media/enrollments/f75d8385-bedf-4082-babf-1825963c7e69.npy \
 	  --report reports/eval/$(shell date +%Y%m%dT%H%M%S)_live.json \
 	  --threshold-profile dev \
