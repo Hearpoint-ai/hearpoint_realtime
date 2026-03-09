@@ -72,9 +72,44 @@ jobs:
         run: make make-fixture PYTHON=python EMBEDDING_MODEL=resemblyzer
 
       - name: Run eval-fast
+        continue-on-error: true
         run: make eval-fast PYTHON=python
 
+      - name: Validate eval report status
+        if: always()
+        run: |
+          python - <<'PY'
+          import glob
+          import json
+          import os
+          import sys
+
+          reports = sorted(glob.glob("reports/eval/*.json"), key=os.path.getmtime)
+          if not reports:
+              print("::error::No eval report JSON found in reports/eval/.")
+              sys.exit(1)
+
+          report_path = reports[-1]
+          with open(report_path, "r", encoding="utf-8") as f:
+              report = json.load(f)
+
+          status = report.get("status")
+          failed = report.get("failed_thresholds", [])
+
+          print(f"Eval report: {report_path}")
+          print(f"status={status}")
+          print(f"failed_thresholds={failed}")
+
+          if status != "pass":
+              failed_str = ", ".join(failed) if failed else "(none listed)"
+              print(f"::error::Eval failed. Thresholds: {failed_str}")
+              sys.exit(1)
+
+          print("Eval passed all thresholds.")
+          PY
+
       - name: Upload eval report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: eval-report
