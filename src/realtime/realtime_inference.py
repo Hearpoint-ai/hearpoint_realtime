@@ -90,6 +90,7 @@ class OptimizationConfig:
     """Performance optimization configuration."""
     precision: str = "fp32"  # "fp32", "fp16", or "bf16"
     use_torch_compile: bool = False
+    backend: str = "pytorch"  # "pytorch", "onnx_cpu", or "tensorrt"
 
 
 @dataclass
@@ -164,6 +165,7 @@ class Config:
             optimization=OptimizationConfig(
                 precision=optimization_data.get("precision", "fp32"),
                 use_torch_compile=optimization_data.get("use_torch_compile", False),
+                backend=optimization_data.get("backend", "pytorch"),
             ),
         )
 
@@ -265,12 +267,16 @@ class RealtimeInference:
                 config.audio.input_channels, 1, self._ntaps - 1, device=self.device
             )
 
+        self.backend = config.optimization.backend
+
         if self.passthrough_mode:
             print("*** PASSTHROUGH MODE - bypassing model ***")
             self.model = None
             self.embedding = None
             self.state = None
             self.stft_pad_size = 0
+        elif self.backend in ("onnx_cpu", "tensorrt"):
+            self._init_onnx_backend(config)
         else:
             # Load model
             self._load_model(
@@ -370,6 +376,115 @@ class RealtimeInference:
                     torch.cuda.synchronize()
         print("CUDA warmup complete.")
 
+    def _init_onnx_backend(self, config: Config) -> None:
+        """Initialize ONNX Runtime session for onnx_cpu or tensorrt backend."""
+        import onnxruntime as ort
+        from src.models.tfgridnet_realtime.export_wrapper import (
+            STATE_INPUT_NAMES, get_state_shapes,
+        )
+
+        # Read stft_pad_size from model config JSON directly
+        config_path = config.get_model_config_path()
+        with config_path.open() as fp:
+            model_json = json.load(fp)
+        model_params = model_json["pl_module_args"]["model_params"]
+        self.stft_pad_size = model_params["stft_pad_size"]
+
+        # We need state shapes — instantiate Net briefly on CPU just for that
+        net = Net(**model_params)
+        state_shapes = get_state_shapes(net)
+        del net
+
+        # Determine ONNX file path
+        onnx_path = REPO_ROOT / "weights" / "tfgridnet.onnx"
+        if not onnx_path.exists():
+            raise FileNotFoundError(
+                f"ONNX model not found: {onnx_path}\n"
+                "Run: python scripts/export_engine.py"
+            )
+
+        # Create ORT session
+        if self.backend == "onnx_cpu":
+            sess_opts = ort.SessionOptions()
+            sess_opts.intra_op_num_threads = 6
+            sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self.ort_session = ort.InferenceSession(
+                str(onnx_path), sess_opts,
+                providers=["CPUExecutionProvider"],
+            )
+        else:  # tensorrt
+            trt_opts = {
+                "trt_engine_cache_enable": True,
+                "trt_engine_cache_path": str(REPO_ROOT / "weights"),
+                "trt_fp16_enable": True,
+            }
+            self.ort_session = ort.InferenceSession(
+                str(onnx_path),
+                providers=[
+                    ("TensorrtExecutionProvider", trt_opts),
+                    "CUDAExecutionProvider",
+                ],
+            )
+
+        # Initialize state as numpy arrays
+        self.state_names = STATE_INPUT_NAMES
+        self.state_flat = [np.zeros(s, dtype=np.float32) for s in state_shapes]
+
+        # Load embedding as numpy
+        if config.model.embedding is None:
+            raise ValueError("Speaker embedding path is required")
+        embedding_path = config.model.embedding
+        if not embedding_path.exists():
+            raise FileNotFoundError(f"Embedding not found: {embedding_path}")
+        embedding = np.load(embedding_path).astype(np.float32).reshape(1, 1, -1)
+        self.embedding_np = embedding
+        self.embedding = torch.from_numpy(embedding)
+        print(f"Loaded embedding from {embedding_path}, shape: {embedding.shape}")
+
+        # CPU resampling filter state (for onnx_cpu)
+        if self.backend == "onnx_cpu" and self.downsample_factor > 1:
+            self._dec_zi = np.zeros((2, self._ntaps - 1), dtype=np.float32)
+
+        # Warmup ORT session
+        self._warmup_ort()
+        print(f"ONNX backend ({self.backend}) initialized.")
+
+    def _warmup_ort(self) -> None:
+        """Warm up ONNX Runtime session with zero inputs."""
+        print("Warming up ONNX Runtime (5 passes)...")
+        feed = {
+            "x": np.zeros((1, 2, self.chunk_size), dtype=np.float32),
+            "embed": self.embedding_np[:, 0],
+            "lookahead": np.zeros((1, 2, self.stft_pad_size), dtype=np.float32),
+        }
+        for name, arr in zip(self.state_names, self.state_flat):
+            feed[name] = arr
+        for _ in range(5):
+            self.ort_session.run(None, feed)
+        print("ONNX warmup complete.")
+
+    def _downsample_cpu(self, audio: np.ndarray) -> np.ndarray:
+        """CPU-based causal anti-alias + decimate. [N, ch] -> [N//factor, ch]"""
+        from scipy.signal import lfilter
+        out_channels = []
+        for c in range(audio.shape[1]):
+            filtered, self._dec_zi[c] = lfilter(
+                self._taps_down, 1.0, audio[:, c], zi=self._dec_zi[c]
+            )
+            out_channels.append(filtered[::self.downsample_factor])
+        return np.column_stack(out_channels).astype(np.float32)
+
+    def _upsample_cpu(self, audio: np.ndarray) -> np.ndarray:
+        """CPU-based zero-stuff + interpolation filter. [N, ch] -> [N*factor, ch]"""
+        from scipy.signal import lfilter
+        factor = self.downsample_factor
+        out_channels = []
+        for c in range(audio.shape[1]):
+            stuffed = np.zeros(len(audio) * factor, dtype=np.float32)
+            stuffed[::factor] = audio[:, c]
+            out_channels.append(lfilter(self._taps_up, 1.0, stuffed))
+        return np.column_stack(out_channels).astype(np.float32)
+
     def _load_embedding(self, embedding_path: Path) -> None:
         """Load speaker embedding from .npy file."""
         if not embedding_path.exists():
@@ -442,6 +557,37 @@ class RealtimeInference:
 
             return output_audio
 
+        # --- ONNX / TensorRT backend (all numpy, no torch) ---
+        if self.backend in ("onnx_cpu", "tensorrt"):
+            x = audio_chunk.T[np.newaxis].astype(np.float32)       # [1, 2, chunk_size]
+            embed = self.embedding_np[:, 0]                         # [1, embed_dim]
+            la = (lookahead.T[np.newaxis].astype(np.float32)
+                  if lookahead is not None and len(lookahead) > 0
+                  else np.zeros((1, 2, self.stft_pad_size), dtype=np.float32))
+
+            feed = {"x": x, "embed": embed, "lookahead": la}
+            for name, arr in zip(self.state_names, self.state_flat):
+                feed[name] = arr
+
+            outputs = self.ort_session.run(None, feed)
+            output_audio = outputs[0]            # [1, 2, chunk_size]
+            self.state_flat = outputs[1:]        # 15 state arrays
+
+            output_audio = np.clip(output_audio.squeeze(0).T, -1.0, 1.0)  # [chunk_size, 2]
+
+            if self.output_channels == 1:
+                output_audio = output_audio.mean(axis=1, keepdims=True)
+
+            if self.save_debug_dir:
+                self.debug_inputs.append(audio_chunk.copy())
+                self.debug_outputs.append(output_audio.copy())
+
+            elapsed = time.perf_counter() - start_time
+            self.processing_times.append(elapsed)
+            self.chunks_processed += 1
+            return output_audio
+
+        # --- PyTorch backend ---
         # Transpose from [chunk_size, 2] to [2, chunk_size] for model.
         # Use pinned memory for fast CPU→GPU transfer.
         self._input_pin.copy_(torch.from_numpy(audio_chunk))
@@ -554,7 +700,10 @@ class RealtimeInference:
                 indata = self.input_queue.get(timeout=0.1)
 
                 if self.downsample_factor > 1:
-                    indata = self._downsample(indata)
+                    if self.backend == "onnx_cpu":
+                        indata = self._downsample_cpu(indata)
+                    else:
+                        indata = self._downsample(indata)
 
                 if self.debug:
                     print(f"Queue sizes - input: {self.input_queue.qsize()}, output: {self.output_queue.qsize()}, "
@@ -583,7 +732,10 @@ class RealtimeInference:
                     output = self._process_chunk(chunk, lookahead)
 
                     if self.downsample_factor > 1:
-                        output = self._upsample(output)
+                        if self.backend == "onnx_cpu":
+                            output = self._upsample_cpu(output)
+                        else:
+                            output = self._upsample(output)
 
                     # Add to output queue
                     try:
@@ -727,24 +879,24 @@ class FileBasedTest:
     """Test real-time inference using pre-recorded audio files."""
 
     def __init__(self, config: Config):
-        """
-        Initialize file-based test runner.
-
-        Args:
-            config: Configuration object containing all parameters.
-        """
         self.config = config
         self.sample_rate = config.audio.sample_rate
         self.chunk_size = config.audio.chunk_size
+        self.backend = config.optimization.backend
+
+        if self.backend in ("onnx_cpu", "tensorrt"):
+            self._init_onnx(config)
+        else:
+            self._init_pytorch(config)
+
+    def _init_pytorch(self, config: Config) -> None:
         self.device = torch.device(config.model.device) if config.model.device else get_torch_device()
 
-        # Enable cuDNN autotuner — input shapes are fixed (chunk_size=128)
         if self.device.type == 'cuda':
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
 
-        # Load model
         self._load_model(
             config.get_checkpoint_path(),
             config.get_model_config_path(),
@@ -754,7 +906,56 @@ class FileBasedTest:
             raise ValueError("Speaker embedding path is required")
         self._load_embedding(config.model.embedding)
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
+        self.stft_pad_size = self.model.stft_pad_size
         self._warmup()
+
+    def _init_onnx(self, config: Config) -> None:
+        import onnxruntime as ort
+        from src.models.tfgridnet_realtime.export_wrapper import (
+            STATE_INPUT_NAMES, get_state_shapes,
+        )
+
+        config_path = config.get_model_config_path()
+        with config_path.open() as fp:
+            model_json = json.load(fp)
+        model_params = model_json["pl_module_args"]["model_params"]
+        self.stft_pad_size = model_params["stft_pad_size"]
+
+        net = Net(**model_params)
+        state_shapes = get_state_shapes(net)
+        del net
+
+        onnx_path = REPO_ROOT / "weights" / "tfgridnet.onnx"
+        if not onnx_path.exists():
+            raise FileNotFoundError(
+                f"ONNX model not found: {onnx_path}\nRun: python scripts/export_engine.py"
+            )
+
+        if self.backend == "onnx_cpu":
+            sess_opts = ort.SessionOptions()
+            sess_opts.intra_op_num_threads = 6
+            sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self.ort_session = ort.InferenceSession(
+                str(onnx_path), sess_opts, providers=["CPUExecutionProvider"],
+            )
+        else:
+            trt_opts = {
+                "trt_engine_cache_enable": True,
+                "trt_engine_cache_path": str(REPO_ROOT / "weights"),
+                "trt_fp16_enable": True,
+            }
+            self.ort_session = ort.InferenceSession(
+                str(onnx_path),
+                providers=[("TensorrtExecutionProvider", trt_opts), "CUDAExecutionProvider"],
+            )
+
+        self.state_names = STATE_INPUT_NAMES
+        self.state_flat = [np.zeros(s, dtype=np.float32) for s in state_shapes]
+
+        if config.model.embedding is None:
+            raise ValueError("Speaker embedding path is required")
+        self.embedding_np = np.load(config.model.embedding).astype(np.float32).reshape(1, 1, -1)
+        print(f"ONNX FileBasedTest ({self.backend}) initialized.")
 
     def _warmup(self) -> None:
         """Warm up CUDA kernels to eliminate first-inference latency spike."""
@@ -806,33 +1007,37 @@ class FileBasedTest:
         self.embedding = torch.from_numpy(embedding).to(self.device)
 
     def process_file(self, input_path: Path, output_path: Path) -> None:
-        """
-        Process an audio file chunk-by-chunk, simulating real-time behavior.
-
-        This validates that streaming inference produces correct results.
-        """
+        """Process an audio file chunk-by-chunk, simulating real-time behavior."""
         import soundfile as sf
         import resampy
 
         print(f"Processing {input_path} -> {output_path}")
 
-        # Load and resample audio
         audio, sr = sf.read(str(input_path))
         if sr != self.sample_rate:
             audio = resampy.resample(audio, sr, self.sample_rate)
 
-        # Ensure stereo
         if audio.ndim == 1:
             audio = np.column_stack([audio, audio])
         audio = audio[:, :2].astype(np.float32)
 
-        # Reset state for fresh processing
-        self.state = self.model.init_buffers(batch_size=1, device=self.device)
+        # Reset state
+        if self.backend in ("onnx_cpu", "tensorrt"):
+            from src.models.tfgridnet_realtime.export_wrapper import get_state_shapes
+            config_path = self.config.get_model_config_path()
+            with config_path.open() as fp:
+                model_json = json.load(fp)
+            model_params = model_json["pl_module_args"]["model_params"]
+            net = Net(**model_params)
+            state_shapes = get_state_shapes(net)
+            del net
+            self.state_flat = [np.zeros(s, dtype=np.float32) for s in state_shapes]
+        else:
+            self.state = self.model.init_buffers(batch_size=1, device=self.device)
 
-        # Process chunk by chunk
         output_chunks = []
         num_chunks = audio.shape[0] // self.chunk_size
-        stft_pad_size = self.model.stft_pad_size
+        stft_pad_size = self.stft_pad_size
 
         processing_times = []
         for i in range(num_chunks):
@@ -840,37 +1045,48 @@ class FileBasedTest:
             end = start + self.chunk_size
             chunk = audio[start:end]  # [chunk_size, 2]
 
-            # Get real lookahead audio from file (next stft_pad_size samples)
-            la_tensor = None
             la_end = end + stft_pad_size
-            if la_end <= len(audio):
-                lookahead = audio[end:la_end]  # [stft_pad_size, 2]
-                la_tensor = torch.from_numpy(lookahead.T).unsqueeze(0).to(self.device)
-
-            # Transpose to [2, chunk_size] for model
-            input_tensor = torch.from_numpy(chunk.T).unsqueeze(0).to(self.device)
+            lookahead = audio[end:la_end] if la_end <= len(audio) else None
 
             start_time = time.perf_counter()
-            autocast_dtype = _PRECISION_MAP.get(self.config.optimization.precision, torch.float16)
-            autocast_ctx = torch.autocast(device_type='cuda', dtype=autocast_dtype, cache_enabled=True)
-            with torch.inference_mode(), autocast_ctx:
-                output, self.state = self.model.predict(
-                    input_tensor,
-                    self.embedding[:, 0],
-                    self.state,
-                    pad=True,
-                    lookahead_audio=la_tensor
-                )
+
+            if self.backend in ("onnx_cpu", "tensorrt"):
+                x = chunk.T[np.newaxis].astype(np.float32)
+                embed = self.embedding_np[:, 0]
+                la = (lookahead.T[np.newaxis].astype(np.float32)
+                      if lookahead is not None
+                      else np.zeros((1, 2, stft_pad_size), dtype=np.float32))
+
+                feed = {"x": x, "embed": embed, "lookahead": la}
+                for name, arr in zip(self.state_names, self.state_flat):
+                    feed[name] = arr
+
+                outputs = self.ort_session.run(None, feed)
+                output_audio = outputs[0].squeeze(0).T  # [chunk_size, 2]
+                self.state_flat = outputs[1:]
+            else:
+                la_tensor = None
+                if lookahead is not None:
+                    la_tensor = torch.from_numpy(lookahead.T).unsqueeze(0).to(self.device)
+
+                input_tensor = torch.from_numpy(chunk.T).unsqueeze(0).to(self.device)
+
+                autocast_dtype = _PRECISION_MAP.get(self.config.optimization.precision, torch.float16)
+                autocast_ctx = torch.autocast(device_type='cuda', dtype=autocast_dtype, cache_enabled=True)
+                with torch.inference_mode(), autocast_ctx:
+                    output, self.state = self.model.predict(
+                        input_tensor, self.embedding[:, 0], self.state,
+                        pad=True, lookahead_audio=la_tensor
+                    )
+                output_audio = output.squeeze(0).cpu().numpy().T
+
             elapsed = time.perf_counter() - start_time
             processing_times.append(elapsed)
-
-            output_audio = output.squeeze(0).cpu().numpy().T
             output_chunks.append(np.clip(output_audio, -1.0, 1.0))
 
             if (i + 1) % 100 == 0:
                 print(f"Processed {i + 1}/{num_chunks} chunks")
 
-        # Concatenate and save
         output_audio = np.concatenate(output_chunks, axis=0)
         sf.write(str(output_path), output_audio, self.sample_rate)
 

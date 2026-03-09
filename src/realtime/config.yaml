@@ -65,6 +65,11 @@ optimization:
   # "reduce-overhead" (CUDA graphs) conflicts with this model's dynamic state tensors.
   use_torch_compile: true
 
+  # Inference backend: "pytorch" | "onnx_cpu" | "tensorrt"
+  # onnx_cpu: ONNX Runtime with CPUExecutionProvider (no CUDA overhead)
+  # tensorrt: ONNX Runtime with TensorrtExecutionProvider (fused GPU graph)
+  backend: pytorch
+
 
 # =============================================================================
 # FILE-BASED TEST MODE

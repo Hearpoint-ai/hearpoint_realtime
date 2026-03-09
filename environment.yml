@@ -14,3 +14,5 @@ dependencies:
       - pysofaconventions
       - espnet
       - sounddevice
+      - onnx
+      - onnxruntime
