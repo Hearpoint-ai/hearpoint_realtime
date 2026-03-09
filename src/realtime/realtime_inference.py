@@ -101,8 +101,9 @@ class Config:
     test: TestConfig = field(default_factory=TestConfig)
 
     @classmethod
-    def from_yaml(cls, yaml_path: Path) -> "Config":
+    def from_yaml(cls, yaml_path: Path | str) -> "Config":
         """Load configuration from a YAML file."""
+        yaml_path = Path(yaml_path)
         if not yaml_path.exists():
             raise FileNotFoundError(f"Config file not found: {yaml_path}")
 
@@ -135,8 +136,8 @@ class Config:
             audio=AudioConfig(
                 sample_rate=audio_data.get("sample_rate", DEFAULT_SAMPLE_RATE),
                 chunk_size=audio_data.get("chunk_size", DEFAULT_CHUNK_SIZE),
-                input_device=audio_data.get("input_device", 5),
-                output_device=audio_data.get("output_device", 4),
+                input_device=audio_data.get("input_device", None),
+                output_device=audio_data.get("output_device", None),
                 input_channels=audio_data.get("input_channels", 2),
                 output_channels=audio_data.get("output_channels", 2),
                 buffer_size_chunks=audio_data.get("buffer_size_chunks", 4),
@@ -181,6 +182,10 @@ class RealtimeInference:
         self.input_device = config.audio.input_device
         self.output_device = config.audio.output_device
         self.buffer_size_chunks = config.audio.buffer_size_chunks
+
+        # Validate device indices if explicitly set
+        self._validate_device(self.input_device, "input")
+        self._validate_device(self.output_device, "output")
 
         # Auto-detect output channels from device if not specified
         if config.audio.output_channels is None:
@@ -310,6 +315,16 @@ class RealtimeInference:
         embedding = embedding.astype(np.float32).reshape(1, 1, -1)
         self.embedding = torch.from_numpy(embedding).to(self.device)
         print(f"Loaded embedding from {embedding_path}, shape: {embedding.shape}")
+
+    def _validate_device(self, device_index: int, kind: str) -> None:
+        """Warn if a specific device index does not exist; no-op when index is None."""
+        if device_index is None:
+            return
+        try:
+            sd.query_devices(device_index, kind)
+        except Exception as e:
+            print(f"Warning: {kind} device index {device_index} is invalid ({e}). "
+                  f"sounddevice will fall back to the system default.")
 
     def _detect_output_channels(self, output_device: int | str | None) -> int:
         """Detect the maximum number of output channels supported by the device."""
@@ -813,6 +828,18 @@ Examples:
         default=None,
         help="Torch device (cpu, cuda, mps). Auto-detected if not specified."
     )
+    parser.add_argument(
+        "--embedding",
+        type=Path,
+        default=None,
+        help="Path to speaker embedding .npy file (overrides config.yaml)"
+    )
+    parser.add_argument(
+        "--test-file",
+        type=Path,
+        default=None,
+        help="Path to input audio file for file-based test mode"
+    )
 
     # Utility arguments
     parser.add_argument(
@@ -846,6 +873,11 @@ Examples:
         config.model.config = args.model_config
     if args.device is not None:
         config.model.device = args.device
+    if args.embedding is not None:
+        config.model.embedding = args.embedding.resolve()
+    if args.test_file is not None:
+        config.test.input_file = args.test_file.resolve()
+        config.test.enabled = True
 
     # Validate required fields
     if config.model.embedding is None and not config.debug.passthrough:

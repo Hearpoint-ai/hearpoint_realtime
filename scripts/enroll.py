@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import shutil
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -17,10 +18,13 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 
-BACKEND_DIR = Path(__file__).resolve().parent
-MEDIA_DIR = BACKEND_DIR / "media"
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+MEDIA_DIR = REPO_ROOT / "media"
 ENROLLMENTS_DIR = MEDIA_DIR / "enrollments"
 DATA_FILE = MEDIA_DIR / "data.json"
+
+sys.path.insert(0, str(REPO_ROOT))
 
 SAMPLE_RATE = 16000
 
