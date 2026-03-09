@@ -406,7 +406,9 @@ class RealtimeInference:
         # Create ORT session
         if self.backend == "onnx_cpu":
             sess_opts = ort.SessionOptions()
-            sess_opts.intra_op_num_threads = 6
+            sess_opts.intra_op_num_threads = 4
+            sess_opts.inter_op_num_threads = 1
+            sess_opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             self.ort_session = ort.InferenceSession(
                 str(onnx_path), sess_opts,
@@ -445,6 +447,22 @@ class RealtimeInference:
         if self.backend == "onnx_cpu" and self.downsample_factor > 1:
             self._dec_zi = np.zeros((2, self._ntaps - 1), dtype=np.float32)
 
+        # Cache scipy lfilter for onnx_cpu resampling (avoid per-call import)
+        if self.backend == "onnx_cpu":
+            from scipy.signal import lfilter
+            self._lfilter = lfilter
+
+        # Pre-allocate feed dict and numpy buffers for ONNX inference
+        self._x_buf = np.zeros((1, 2, self.chunk_size), dtype=np.float32)
+        self._la_buf = np.zeros((1, 2, self.stft_pad_size), dtype=np.float32)
+        self._feed = {
+            "x": self._x_buf,
+            "embed": self.embedding_np[:, 0],
+            "lookahead": self._la_buf,
+        }
+        for name, arr in zip(self.state_names, self.state_flat):
+            self._feed[name] = arr
+
         # Warmup ORT session
         self._warmup_ort()
         print(f"ONNX backend ({self.backend}) initialized.")
@@ -465,7 +483,7 @@ class RealtimeInference:
 
     def _downsample_cpu(self, audio: np.ndarray) -> np.ndarray:
         """CPU-based causal anti-alias + decimate. [N, ch] -> [N//factor, ch]"""
-        from scipy.signal import lfilter
+        lfilter = self._lfilter
         out_channels = []
         for c in range(audio.shape[1]):
             filtered, self._dec_zi[c] = lfilter(
@@ -476,7 +494,7 @@ class RealtimeInference:
 
     def _upsample_cpu(self, audio: np.ndarray) -> np.ndarray:
         """CPU-based zero-stuff + interpolation filter. [N, ch] -> [N*factor, ch]"""
-        from scipy.signal import lfilter
+        lfilter = self._lfilter
         factor = self.downsample_factor
         out_channels = []
         for c in range(audio.shape[1]):
@@ -533,9 +551,10 @@ class RealtimeInference:
             print(f"Input: shape={audio_chunk.shape}, min={audio_chunk.min():.4f}, "
                   f"max={audio_chunk.max():.4f}, mean={audio_chunk.mean():.4f}, nan={has_nan}")
 
-        # Update input level for monitoring
-        with self.input_level_lock:
-            self.recent_input_level = np.abs(audio_chunk).max()
+        # Update input level for monitoring (every 16th chunk to reduce overhead)
+        if self.chunks_processed % 16 == 0:
+            with self.input_level_lock:
+                self.recent_input_level = np.abs(audio_chunk).max()
 
         # Passthrough mode: bypass model entirely
         if self.passthrough_mode:
@@ -559,19 +578,17 @@ class RealtimeInference:
 
         # --- ONNX / TensorRT backend (all numpy, no torch) ---
         if self.backend in ("onnx_cpu", "tensorrt"):
-            x = audio_chunk.T[np.newaxis].astype(np.float32)       # [1, 2, chunk_size]
-            embed = self.embedding_np[:, 0]                         # [1, embed_dim]
-            la = (lookahead.T[np.newaxis].astype(np.float32)
-                  if lookahead is not None and len(lookahead) > 0
-                  else np.zeros((1, 2, self.stft_pad_size), dtype=np.float32))
+            self._x_buf[:] = audio_chunk.T[np.newaxis]
+            if lookahead is not None and len(lookahead) > 0:
+                self._la_buf[:] = lookahead.T[np.newaxis]
+            else:
+                self._la_buf.fill(0)
 
-            feed = {"x": x, "embed": embed, "lookahead": la}
-            for name, arr in zip(self.state_names, self.state_flat):
-                feed[name] = arr
-
-            outputs = self.ort_session.run(None, feed)
+            outputs = self.ort_session.run(None, self._feed)
             output_audio = outputs[0]            # [1, 2, chunk_size]
             self.state_flat = outputs[1:]        # 15 state arrays
+            for name, arr in zip(self.state_names, self.state_flat):
+                self._feed[name] = arr
 
             output_audio = np.clip(output_audio.squeeze(0).T, -1.0, 1.0)  # [chunk_size, 2]
 
@@ -696,8 +713,16 @@ class RealtimeInference:
         """Background thread for processing audio chunks."""
         while self.running:
             try:
-                # Get input audio (blocking with timeout)
+                # Get input audio (blocking with timeout), then drain remaining
                 indata = self.input_queue.get(timeout=0.1)
+                blocks = [indata]
+                while True:
+                    try:
+                        blocks.append(self.input_queue.get_nowait())
+                    except queue.Empty:
+                        break
+                if len(blocks) > 1:
+                    indata = np.concatenate(blocks, axis=0)
 
                 if self.downsample_factor > 1:
                     if self.backend == "onnx_cpu":

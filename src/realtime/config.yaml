@@ -17,14 +17,14 @@ audio:
   hardware_sample_rate: 48000
 
   # Chunk size in samples
-  chunk_size: 256
+  chunk_size: 128
 
   # Input device index (null for system default)
   # Run with --list-devices to see available devices
-  input_device: "hw:2,0"
+  input_device: "hw:0,0"
 
   # Output device index (null for system default)
-  output_device: "hw:3,0"
+  output_device: "hw:2,0"
 
   # Number of input channels (1 for mono mic)
   input_channels: 2
@@ -68,7 +68,7 @@ optimization:
   # Inference backend: "pytorch" | "onnx_cpu" | "tensorrt"
   # onnx_cpu: ONNX Runtime with CPUExecutionProvider (no CUDA overhead)
   # tensorrt: ONNX Runtime with TensorrtExecutionProvider (fused GPU graph)
-  backend: pytorch
+  backend: onnx_cpu
 
 
 # =============================================================================
