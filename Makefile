@@ -4,6 +4,7 @@ PYTHON ?= /opt/miniconda3/envs/hearpoint-realtime/bin/python
 NAME ?= User
 AUDIO ?= media/enrollments/sample.wav
 DURATION ?= 10
+EMBEDDING_MODEL ?= resemblyzer
 
 # Generate the SI-SDR fixture (run once, or whenever speakers change)
 make-fixture:
@@ -11,7 +12,8 @@ make-fixture:
 	  --target      data/our_speech_pool/Chris.wav \
 	  --interferers data/our_speech_pool/Himanshu.wav data/our_speech_pool/Sanna.wav \
 	  --noise        data/wham_noise/011a0101_0.061105_401c020r_-0.061105.wav \
-	  --output-dir  media/si_sdr_fixture
+	  --output-dir  media/si_sdr_fixture \
+	  --embedding-model "$(EMBEDDING_MODEL)"
 
 eval-fast:
 	mkdir -p reports/eval
@@ -34,12 +36,12 @@ eval-live:
 
 # Enroll a user from an existing stereo WAV file.
 # Example:
-#   make enroll NAME=Hady AUDIO=/path/to/enrollment.wav
+#   make enroll NAME=Hady AUDIO=/path/to/enrollment.wav EMBEDDING_MODEL=resemblyzer
 enroll:
-	$(PYTHON) scripts/enroll.py --name "$(NAME)" --audio "$(AUDIO)"
+	$(PYTHON) scripts/enroll.py --name "$(NAME)" --audio "$(AUDIO)" --embedding-model "$(EMBEDDING_MODEL)"
 
 # Enroll a user by recording from microphone.
 # Example:
-#   make enroll-record NAME=Hady DURATION=5
+#   make enroll-record NAME=Hady DURATION=5 EMBEDDING_MODEL=tfgridnet
 enroll-record:
-	$(PYTHON) scripts/enroll.py --name "$(NAME)" --record --duration "$(DURATION)"
+	$(PYTHON) scripts/enroll.py --name "$(NAME)" --record --duration "$(DURATION)" --embedding-model "$(EMBEDDING_MODEL)"

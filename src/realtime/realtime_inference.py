@@ -36,6 +36,7 @@ REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.models.tfgridnet_realtime.net import Net
+from src.ml.factory import EMBEDDING_MODEL_IDS, create_embedding_model
 from src.utils import get_torch_device
 
 
@@ -66,6 +67,14 @@ _THRESHOLD_OPS: dict[str, str] = {
 
 # Excluded from threshold evaluation in file mode (always stub-zero)
 _FILE_MODE_EXCLUDED: set[str] = {"drops_input", "drops_output", "underruns"}
+
+
+def _normalize_embedding_model_id(model_id: str | None) -> str:
+    normalized = (model_id or "resemblyzer").strip().lower()
+    if normalized not in EMBEDDING_MODEL_IDS:
+        allowed = ", ".join(EMBEDDING_MODEL_IDS)
+        raise ValueError(f"Unknown embedding model '{model_id}'. Allowed: {allowed}")
+    return normalized
 
 
 def _load_threshold_profile(profile: str, path: Path = DEFAULT_THRESHOLDS_PATH) -> dict:
@@ -152,6 +161,7 @@ def _si_sdr_stereo(reference: np.ndarray, estimate: np.ndarray) -> float:
 class ModelConfig:
     """Model-related configuration."""
     embedding: Path | None = None
+    embedding_model: str = "resemblyzer"
     checkpoint: Path | None = None
     config: Path | None = None
     device: str | None = None
@@ -228,11 +238,15 @@ class Config:
         opt_data = data.get("optimization", {}) or {}
         test_data = data.get("test", {}) or {}
 
-        # Load embedding path from top-level config
+        # Load embedding settings from top-level config
         embedding_path = to_path(data.get("embedding"))
+        embedding_model = _normalize_embedding_model_id(data.get("embedding_model", "resemblyzer"))
 
         return cls(
-            model=ModelConfig(embedding=embedding_path),
+            model=ModelConfig(
+                embedding=embedding_path,
+                embedding_model=embedding_model,
+            ),
             audio=AudioConfig(
                 sample_rate=audio_data.get("sample_rate", DEFAULT_SAMPLE_RATE),
                 chunk_size=audio_data.get("chunk_size", DEFAULT_CHUNK_SIZE),
@@ -842,6 +856,7 @@ class FileBasedTest:
         self.config = config
         self.sample_rate = config.audio.sample_rate
         self.chunk_size = config.audio.chunk_size
+        self.embedding_model_id = _normalize_embedding_model_id(config.model.embedding_model)
         self.device = torch.device(config.model.device) if config.model.device else get_torch_device()
 
         # Load model
@@ -998,18 +1013,29 @@ class FileBasedTest:
         if not sidecar_path.exists():
             raise FileNotFoundError(
                 f"Embedding sidecar not found: {sidecar_path}\n"
-                f"Re-enroll with updated enroll.py or regenerate fixture with make_fixture.py"
+                f"Re-enroll/regenerate fixture with --embedding-model {self.embedding_model_id}"
             )
-        sidecar = json.loads(sidecar_path.read_text())
-        expected_class = "TFGridNetSpeakerEmbeddingModel"
-        if sidecar.get("embedding_model_class") != expected_class:
+        try:
+            sidecar = json.loads(sidecar_path.read_text())
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid embedding sidecar JSON: {sidecar_path}") from exc
+
+        sidecar_model_id = sidecar.get("embedding_model_id")
+        if sidecar_model_id is None:
             raise ValueError(
-                f"Embedding class mismatch: sidecar={sidecar.get('embedding_model_class')!r}, "
-                f"expected={expected_class!r}"
+                f"Embedding sidecar missing 'embedding_model_id': {sidecar_path}\n"
+                f"Re-enroll/regenerate fixture with --embedding-model {self.embedding_model_id}"
+            )
+        sidecar_model_id = _normalize_embedding_model_id(str(sidecar_model_id))
+        if sidecar_model_id != self.embedding_model_id:
+            raise ValueError(
+                "Embedding model mismatch: "
+                f"enrollment sidecar has '{sidecar_model_id}', "
+                f"but runtime selected '{self.embedding_model_id}'. "
+                "Re-enroll/regenerate fixture with the selected model."
             )
 
-        from src.ml.TFGridNetSpeakerEmbeddingModel import TFGridNetSpeakerEmbeddingModel
-        emb_model  = TFGridNetSpeakerEmbeddingModel()
+        emb_model = create_embedding_model(self.embedding_model_id)
         emb_input  = emb_model.compute_embedding(input_path)
         emb_output = emb_model.compute_embedding(output_path)
         target_emb = self.embedding.squeeze().cpu().numpy()
@@ -1108,6 +1134,12 @@ Examples:
         help="Path to speaker embedding .npy file (overrides config.yaml)"
     )
     parser.add_argument(
+        "--embedding-model",
+        choices=EMBEDDING_MODEL_IDS,
+        default=None,
+        help="Speaker embedding model ID (overrides top-level embedding_model in config.yaml)",
+    )
+    parser.add_argument(
         "--test-file",
         type=Path,
         default=None,
@@ -1169,7 +1201,10 @@ Examples:
     # Load configuration from config.yaml
     if DEFAULT_YAML_CONFIG_PATH.exists():
         print(f"Loading config from: {DEFAULT_YAML_CONFIG_PATH}")
-        config = Config.from_yaml(DEFAULT_YAML_CONFIG_PATH)
+        try:
+            config = Config.from_yaml(DEFAULT_YAML_CONFIG_PATH)
+        except ValueError as exc:
+            parser.error(str(exc))
     else:
         print("No config.yaml found, using defaults")
         config = Config()
@@ -1183,9 +1218,12 @@ Examples:
         config.model.device = args.device
     if args.embedding is not None:
         config.model.embedding = args.embedding.resolve()
+    if args.embedding_model is not None:
+        config.model.embedding_model = _normalize_embedding_model_id(args.embedding_model)
     if args.test_file is not None:
         config.test.input_file = args.test_file.resolve()
         config.test.enabled = True
+    config.model.embedding_model = _normalize_embedding_model_id(config.model.embedding_model)
 
     # Validate required fields
     if config.model.embedding is None and not config.debug.passthrough:

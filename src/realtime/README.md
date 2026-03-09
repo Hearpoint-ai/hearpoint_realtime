@@ -18,6 +18,9 @@ python realtime_inference.py --list-devices
 
 # Override the torch device
 python realtime_inference.py --device mps
+
+# Override embedding model ID used for cosine eval checks
+python realtime_inference.py --embedding-model resemblyzer
 ```
 
 ## Configuration (`config.yaml`)
@@ -31,6 +34,16 @@ Path to a `.npy` speaker embedding file. This is the enrollment vector for the t
 ```yaml
 embedding: media/enrollments/speaker.npy
 ```
+
+### `embedding_model`
+
+Embedding model ID used for enrollment compatibility checks in file mode cosine metrics.
+
+```yaml
+embedding_model: resemblyzer
+```
+
+Allowed values: `resemblyzer`, `tfgridnet`.
 
 ### `audio`
 
@@ -84,3 +97,5 @@ File-based test mode processes a pre-recorded audio file chunk-by-chunk, simulat
 6. **Monitoring** — Every second, the main thread prints statistics: chunks processed, average/max processing time, real-time factor (RTF), queue sizes, and an input level meter in dB.
 
 7. **File-based test mode** — When `test.enabled` is `true` or `--test-file` is provided, the script reads an audio file, processes it chunk-by-chunk (with lookahead) through the same model pipeline, and writes the enhanced output to a file.
+   - Cosine metrics require an embedding sidecar (`<embedding>.meta.json`) with `embedding_model_id`.
+   - If sidecar model ID does not match selected `embedding_model`, eval fails fast and requires re-enrollment/regeneration with the selected model.

@@ -42,3 +42,4 @@ Each report contains run metadata, performance metrics, stability metrics, and t
 - In `file` mode, `drops_input`, `drops_output`, and `underruns` are stubbed to `0` for schema consistency.
 - Threshold checks for those three stability metrics are excluded in `file` mode.
 - If no `--threshold-profile` is provided, `failed_thresholds` is empty and `status` is `pass`.
+- File-mode cosine metrics require `<embedding>.meta.json` with `embedding_model_id`; old enrollments without matching sidecar/model are unsupported (re-enroll/regenerate fixture).

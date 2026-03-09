@@ -15,6 +15,7 @@ Usage:
         --interferers data/our_speech_pool/Himanshu.wav data/our_speech_pool/Matt.wav \
         --noise       data/wham_noise/011a0101_0.8207_2ajyi_-0.8207.wav \
         --output-dir  media/si_sdr_fixture \
+        --embedding-model resemblyzer \
         --snr-speech  0 \
         --snr-noise   20
 """
@@ -31,6 +32,8 @@ import soundfile as sf
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+from src.ml.factory import EMBEDDING_MODEL_IDS, create_embedding_model, embedding_model_class_name
 
 TARGET_SR = 16000
 
@@ -59,6 +62,7 @@ def make_fixture(
     output_dir: Path,
     snr_speech: float,
     snr_noise: float,
+    embedding_model_id: str,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -100,20 +104,23 @@ def make_fixture(
     print(f"reference.wav: {reference.shape} @ {TARGET_SR}Hz")
 
     # Compute embedding from raw (un-normalised) target
-    from src.ml.TFGridNetSpeakerEmbeddingModel import TFGridNetSpeakerEmbeddingModel
-
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         tmp = Path(f.name)
     sf.write(str(tmp), target, TARGET_SR)
-    embedding = TFGridNetSpeakerEmbeddingModel().compute_embedding(tmp)
+    embedding_model = create_embedding_model(embedding_model_id)
+    embedding = embedding_model.compute_embedding(tmp)
     tmp.unlink()
 
     emb_path = output_dir / "enrollment.npy"
     np.save(str(emb_path), embedding)
-    print(f"enrollment.npy: {embedding.shape}")
+    print(f"enrollment.npy: {embedding.shape} (model={embedding_model_id})")
 
     # Write sidecar
-    sidecar = {"embedding_model_class": "TFGridNetSpeakerEmbeddingModel", "sample_rate": TARGET_SR}
+    sidecar = {
+        "embedding_model_id": embedding_model_id,
+        "embedding_model_class": embedding_model_class_name(embedding_model_id),
+        "sample_rate": TARGET_SR,
+    }
     (output_dir / "enrollment.meta.json").write_text(json.dumps(sidecar, indent=2))
     print("enrollment.meta.json written")
 
@@ -123,6 +130,8 @@ def make_fixture(
         "target": str(target_path),
         "interferers": [str(p) for p in interferer_paths],
         "noise": str(noise_path) if noise_path else None,
+        "embedding_model_id": embedding_model_id,
+        "embedding_model_class": embedding_model_class_name(embedding_model_id),
         "snr_speech_db": snr_speech,
         "snr_noise_db": snr_noise,
         "duration_s": round(duration, 3),
@@ -141,6 +150,12 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=Path("media/si_sdr_fixture"))
     parser.add_argument("--snr-speech", type=float, default=0.0, help="dB of target over each interferer")
     parser.add_argument("--snr-noise", type=float, default=20.0, help="dB of speech mix above noise")
+    parser.add_argument(
+        "--embedding-model",
+        choices=EMBEDDING_MODEL_IDS,
+        default="resemblyzer",
+        help="Speaker embedding model used to build enrollment.npy (default: resemblyzer)",
+    )
     args = parser.parse_args()
 
     make_fixture(
@@ -150,6 +165,7 @@ def main() -> None:
         output_dir=args.output_dir,
         snr_speech=args.snr_speech,
         snr_noise=args.snr_noise,
+        embedding_model_id=args.embedding_model,
     )
 
 

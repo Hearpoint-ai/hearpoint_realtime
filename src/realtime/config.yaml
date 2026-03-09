@@ -7,6 +7,10 @@
 # e.g., "/path/to/speaker_embedding.npy"
 embedding: media/enrollments/f75d8385-bedf-4082-babf-1825963c7e69.npy
 
+# Speaker embedding model ID used for enrollment and cosine eval checks
+# Allowed: resemblyzer, tfgridnet
+embedding_model: resemblyzer
+
 # =============================================================================
 # AUDIO CONFIGURATION
 # =============================================================================

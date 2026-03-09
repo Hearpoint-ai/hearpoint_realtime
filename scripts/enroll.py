@@ -4,6 +4,7 @@ Standalone CLI script to enroll a speaker from an audio file or mic recording.
 Usage:
     python enroll.py --name "Alice" --audio /path/to/recording.wav
     python enroll.py --name "Alice" --record --duration 5
+    python enroll.py --name "Alice" --audio /path/to/recording.wav --embedding-model tfgridnet
 """
 
 import argparse
@@ -25,6 +26,8 @@ ENROLLMENTS_DIR = MEDIA_DIR / "enrollments"
 DATA_FILE = MEDIA_DIR / "data.json"
 
 sys.path.insert(0, str(REPO_ROOT))
+
+from src.ml.factory import EMBEDDING_MODEL_IDS, create_embedding_model, embedding_model_class_name
 
 SAMPLE_RATE = 16000
 
@@ -82,6 +85,12 @@ def main():
     source.add_argument("--record", action="store_true", help="Record from a 2-channel microphone")
 
     parser.add_argument("--duration", type=float, default=5.0, help="Recording duration in seconds (default: 5)")
+    parser.add_argument(
+        "--embedding-model",
+        choices=EMBEDDING_MODEL_IDS,
+        default="resemblyzer",
+        help="Speaker embedding model to use (default: resemblyzer)",
+    )
     args = parser.parse_args()
 
     ENROLLMENTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -106,10 +115,9 @@ def main():
         )
 
     # Compute embedding
-    from src.ml.TFGridNetSpeakerEmbeddingModel import TFGridNetSpeakerEmbeddingModel
-
     t0 = time.perf_counter()
-    model = TFGridNetSpeakerEmbeddingModel()
+    model_id = args.embedding_model
+    model = create_embedding_model(model_id)
     embedding = model.compute_embedding(dest_audio)
     processing_ms = (time.perf_counter() - t0) * 1000
 
@@ -119,7 +127,11 @@ def main():
 
     # Write sidecar so eval harness can validate embedding model
     import json as _json
-    sidecar = {"embedding_model_class": "TFGridNetSpeakerEmbeddingModel", "sample_rate": SAMPLE_RATE}
+    sidecar = {
+        "embedding_model_id": model_id,
+        "embedding_model_class": embedding_model_class_name(model_id),
+        "sample_rate": int(info.samplerate),
+    }
     dest_embedding.with_suffix(".meta.json").write_text(_json.dumps(sidecar, indent=2))
 
     # Update data.json
@@ -140,7 +152,10 @@ def main():
     speakers.append(speaker)
     store.save(speakers, recordings, extractions)
 
-    print(f"Enrolled speaker '{args.name}' (id={speaker_id}) in {processing_ms:.0f}ms")
+    print(
+        f"Enrolled speaker '{args.name}' (id={speaker_id}) with model '{model_id}' "
+        f"in {processing_ms:.0f}ms"
+    )
 
 
 if __name__ == "__main__":
