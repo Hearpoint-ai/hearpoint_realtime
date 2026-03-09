@@ -23,7 +23,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy soundfile sounddevice pyyaml resemblyzer \
+          pip install numpy soundfile sounddevice pyyaml resampy resemblyzer \
                       asteroid-filterbanks espnet
 
       - name: Validate config import
