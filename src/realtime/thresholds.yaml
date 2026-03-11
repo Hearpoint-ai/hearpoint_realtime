@@ -1,0 +1,23 @@
+dev:
+  # --- latency (applies to both file and live mode) ---
+  rtf_avg: 1.0
+  nan_count: 0
+  clip_ratio: 0.02
+  # --- stability (live mode only; stub-zero in file mode — excluded from file-mode eval) ---
+  drops_input: 0       # live only
+  drops_output: 0      # live only
+  underruns: 0         # live only
+  # --- quality (file mode, always computed) ---
+  cosine_similarity_delta: 0.0
+  # --- quality (file mode, only when --reference-file provided) ---
+  si_sdr_improvement: 0.0
+
+target:
+  rtf_avg: 0.8
+  nan_count: 0
+  clip_ratio: 0.01
+  drops_input: 0       # live only
+  drops_output: 0      # live only
+  underruns: 0         # live only
+  cosine_similarity_delta: 0.05
+  si_sdr_improvement: 2.0

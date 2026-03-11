@@ -13,6 +13,7 @@ hearpoint_realtime/
 │   │   ├── TFGridNetExtractionModel.py         # Offline target speech extraction
 │   │   ├── CleanedTfSpeakerEmbedding.py        # Experimental cleaned-up embedding model
 │   │   ├── ResemblyzerSpeakerEmbeddingModel.py # Resemblyzer-based embedding model
+│   │   ├── factory.py             # Embedding model registry/factory by stable ID
 │   │   ├── CopyMixtureExtractionModel.py       # Passthrough baseline extraction model
 │   │   ├── MockSpeakerEmbeddingModel.py        # Mock for testing
 │   │   └── binaural_synth.py      # Binaural audio synthesis utilities
@@ -51,6 +52,18 @@ Create a speaker embedding from an audio file or live recording:
 ```bash
 python scripts/enroll.py --name "Alice" --audio /path/to/recording.wav
 python scripts/enroll.py --name "Alice" --record --duration 5
+python scripts/enroll.py --name "Alice" --audio /path/to/recording.wav --embedding-model tfgridnet
+```
+
+Default embedding model is `resemblyzer`. Allowed IDs are `resemblyzer` and `tfgridnet`.
+
+### Generate Eval Fixture
+
+```bash
+python scripts/make_fixture.py \
+  --target data/our_speech_pool/Chris.wav \
+  --interferers data/our_speech_pool/Himanshu.wav \
+  --embedding-model resemblyzer
 ```
 
 ### Offline Extraction
@@ -71,7 +84,10 @@ cd src/realtime
 python realtime_inference.py --list-devices          # find your audio device indices
 python realtime_inference.py                          # run with config.yaml settings
 python realtime_inference.py --embedding speaker.npy  # override embedding via CLI
+python realtime_inference.py --embedding-model tfgridnet
 python realtime_inference.py --test-file input.wav    # validate with a pre-recorded file
 ```
 
 Configuration is managed via `src/realtime/config.yaml`. See [`src/realtime/README.md`](src/realtime/README.md) for full documentation on configuration, debugging, and performance tuning.
+
+Embedding sidecars are enforced in eval file mode. If the selected `embedding_model` does not match the enrollment sidecar, rerun enrollment/fixture generation with the same model ID.

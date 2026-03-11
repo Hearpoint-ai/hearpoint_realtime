@@ -1,7 +1,7 @@
-weights/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.DS_Store
 .claude/
+reports/eval/*.json

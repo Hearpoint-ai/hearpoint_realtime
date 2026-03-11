@@ -7,6 +7,10 @@
 # e.g., "/path/to/speaker_embedding.npy"
 embedding: media/enrollments/f75d8385-bedf-4082-babf-1825963c7e69.npy
 
+# Speaker embedding model ID used for enrollment and cosine eval checks
+# Allowed: resemblyzer, tfgridnet
+embedding_model: resemblyzer
+
 # =============================================================================
 # AUDIO CONFIGURATION
 # =============================================================================
@@ -19,13 +23,13 @@ audio:
 
   # Input device index (null for system default)
   # Run with --list-devices to see available devices
-  input_device: null
+  input_device: 1
 
   # Output device index (null for system default)
-  output_device: null
+  output_device: 2
 
-  # Number of input channels (1 for mono mic)
-  input_channels: 2
+  # Number of input channels (1 for mono mic, 2 for stereo mic)
+  input_channels: 1
 
   # Number of output channels (null for auto-detect, 1 for mono, 2 for stereo)
   output_channels: 2
@@ -39,7 +43,7 @@ audio:
 # =============================================================================
 debug:
   # Enable verbose debug logging (prints input/output stats per chunk)
-  verbose: true
+  verbose: false
 
   # Bypass the model entirely - pass audio through unchanged
   # Useful for testing audio I/O pipeline
