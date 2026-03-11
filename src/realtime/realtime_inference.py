@@ -180,6 +180,7 @@ class AudioConfig:
     input_channels: int = 2
     output_channels: int | None = 2
     buffer_size_chunks: int = 4
+    output_gain: float = 1.0  # linear multiplier applied to output audio
 
 
 @dataclass
@@ -272,6 +273,7 @@ class Config:
                 input_channels=audio_data.get("input_channels", 2),
                 output_channels=audio_data.get("output_channels", 2),
                 buffer_size_chunks=audio_data.get("buffer_size_chunks", 4),
+                output_gain=audio_data.get("output_gain", 1.0),
             ),
             debug=DebugConfig(
                 verbose=debug_data.get("verbose", False),
@@ -318,6 +320,7 @@ class RealtimeInference:
         self.input_device = config.audio.input_device
         self.output_device = config.audio.output_device
         self.buffer_size_chunks = config.audio.buffer_size_chunks
+        self.output_gain = config.audio.output_gain
 
         # Validate device indices if explicitly set
         self._validate_device(self.input_device, "input")
@@ -520,6 +523,8 @@ class RealtimeInference:
                 output_audio = audio_chunk.mean(axis=1, keepdims=True)
             else:
                 output_audio = audio_chunk
+            output_audio = output_audio * self.output_gain
+            output_audio = np.clip(output_audio, -1.0, 1.0)
             elapsed = time.perf_counter() - start_time
             self.processing_times.append(elapsed)
             self.chunks_processed += 1
@@ -567,6 +572,7 @@ class RealtimeInference:
         # --- Post: tensor -> numpy ---
         t_post = time.perf_counter()
         output_audio = output.squeeze(0).cpu().numpy()
+        output_audio *= self.output_gain
         output_audio = np.clip(output_audio, -1.0, 1.0)
         output_audio = output_audio.T
 
