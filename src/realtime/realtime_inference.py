@@ -14,6 +14,7 @@ Supports:
 
 import argparse
 import json
+import multiprocessing
 import queue
 import socket
 import sys
@@ -342,11 +343,15 @@ class RealtimeInference:
         self.input_queue = queue.Queue(maxsize=64)
         self.output_queue = queue.Queue(maxsize=64)
 
-        # Name detection (Vosk)
+        # Name detection (Vosk) — runs in a separate OS process to avoid GIL contention
         self.name_detection_enabled = config.name_detection.enabled
-        self.name_detection_queue: queue.Queue | None = None
+        self._name_detection_queue: multiprocessing.Queue | None = None
+        self._name_detection_event: multiprocessing.Event | None = None
+        self._name_detection_stop: multiprocessing.Event | None = None
         if self.name_detection_enabled:
-            self.name_detection_queue = queue.Queue(maxsize=64)
+            self._name_detection_queue = multiprocessing.Queue(maxsize=64)
+            self._name_detection_event = multiprocessing.Event()
+            self._name_detection_stop = multiprocessing.Event()
             self._name_detection_target = config.name_detection.target_word.lower().strip()
             self._name_detection_model_path = config.name_detection.model_path
 
@@ -649,11 +654,11 @@ class RealtimeInference:
             except queue.Full:
                 self.drops_input += 1
 
-            # Tee audio to name-detection queue if enabled
-            if self.name_detection_queue is not None:
+            # Tee audio to name-detection process queue if enabled
+            if self._name_detection_queue is not None:
                 try:
-                    self.name_detection_queue.put_nowait(indata.copy())
-                except queue.Full:
+                    self._name_detection_queue.put_nowait(indata.copy())
+                except Exception:
                     pass  # drop silently; name detection is best-effort
 
             # Capture audio for enrollment if active
@@ -710,6 +715,13 @@ class RealtimeInference:
                     # Process through model with real lookahead audio (pass stereo)
                     output = self._process_chunk(chunk, lookahead)
 
+                    # Poll Vosk child-process detection event (non-blocking)
+                    if (self._name_detection_event is not None
+                            and self._name_detection_event.is_set()
+                            and not self.passthrough_mode):
+                        self._name_detection_event.clear()
+                        self.set_passthrough(True)
+
                     # Add to output queue
                     try:
                         # If queue is getting too full, drop oldest items to prevent latency buildup
@@ -730,41 +742,6 @@ class RealtimeInference:
                 import traceback
                 traceback.print_exc()
 
-    def _name_detection_thread(self) -> None:
-        """Background thread: Vosk ASR on tee'd input stream, trigger on target word."""
-        from vosk import Model, KaldiRecognizer  # lazy import — vosk not required when disabled
-
-        if self._name_detection_model_path is None or not self._name_detection_model_path.exists():
-            return
-        model = Model(str(self._name_detection_model_path))
-        recognizer = KaldiRecognizer(model, self.sample_rate)
-        target = self._name_detection_target
-
-        while self.running:
-            try:
-                chunk = self.name_detection_queue.get(timeout=0.1)
-                # Convert float32 (stereo or mono) to mono int16 bytes — expected Vosk input format
-                if chunk.ndim > 1:
-                    mono = chunk.mean(axis=1)
-                else:
-                    mono = chunk.flatten()
-                data = (mono * 32767).astype(np.int16).tobytes()
-
-                if recognizer.AcceptWaveform(data):
-                    result = json.loads(recognizer.Result())
-                    text = (result.get("text") or "").lower().strip()
-                    if target in text.split() and not self.passthrough_mode:
-                        self.set_passthrough(True)
-                else:
-                    partial = json.loads(recognizer.PartialResult())
-                    text = (partial.get("partial") or "").lower().strip()
-                    if text and target in text.split() and not self.passthrough_mode:
-                        self.set_passthrough(True)
-
-            except queue.Empty:
-                continue
-            except Exception as e:
-                pass
 
     def _play_transparency_sound(self) -> None:
         """Play the transparency sound effect once (in a separate thread)."""
@@ -808,11 +785,23 @@ class RealtimeInference:
         self._process_thread = threading.Thread(target=self._processing_thread, daemon=True)
         self._process_thread.start()
 
-        self._name_detection_thread_handle = None
+        self._name_detection_process = None
         if self.name_detection_enabled:
-            self._name_detection_thread_handle = threading.Thread(
-                target=self._name_detection_thread, daemon=True)
-            self._name_detection_thread_handle.start()
+            from src.realtime.vosk_worker import vosk_worker
+
+            self._name_detection_process = multiprocessing.Process(
+                target=vosk_worker,
+                args=(
+                    self._name_detection_queue,
+                    self._name_detection_event,
+                    self._name_detection_stop,
+                    str(self._name_detection_model_path),
+                    self.sample_rate,
+                    self._name_detection_target,
+                ),
+                daemon=True,
+            )
+            self._name_detection_process.start()
 
         input_blocksize = self.chunk_size * self.buffer_size_chunks
         self._input_stream = sd.InputStream(
@@ -831,8 +820,12 @@ class RealtimeInference:
         self.running = False
         if hasattr(self, '_process_thread'):
             self._process_thread.join(timeout=2.0)
-        if getattr(self, '_name_detection_thread_handle', None) is not None:
-            self._name_detection_thread_handle.join(timeout=1.0)
+        if getattr(self, '_name_detection_stop', None) is not None:
+            self._name_detection_stop.set()
+        if getattr(self, '_name_detection_process', None) is not None:
+            self._name_detection_process.join(timeout=2.0)
+            if self._name_detection_process.is_alive():
+                self._name_detection_process.terminate()
         for stream_attr in ('_input_stream', '_output_stream'):
             s = getattr(self, stream_attr, None)
             if s is not None:
@@ -1235,6 +1228,9 @@ class FileBasedTest:
 
 
 def main():
+    # Ensure child processes use 'spawn' (default on macOS, explicit for portability)
+    multiprocessing.set_start_method("spawn", force=True)
+
     parser = argparse.ArgumentParser(
         description="Real-time TFGridNet inference for target speech extraction",
         formatter_class=argparse.RawDescriptionHelpFormatter,
