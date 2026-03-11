@@ -22,7 +22,13 @@ class ResemblyzerSpeakerEmbeddingModel(SpeakerEmbeddingModel):
     def compute_embedding_from_array(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
         """
         Compute an embedding directly from an in-memory waveform.
+
+        Args:
+            audio: Stereo audio [2, N] channels-first. Averaged to mono internally.
+            sample_rate: Sample rate of the input audio.
         """
-        waveform = preprocess_wav(audio, source_sr=sample_rate)
+        if audio.ndim == 2:
+            audio = audio.mean(axis=0)
+        waveform = preprocess_wav(audio.astype(np.float32), source_sr=sample_rate)
         embedding = self._encoder.embed_utterance(waveform)
         return embedding.astype(np.float32)

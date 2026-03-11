@@ -11,15 +11,22 @@ class SpeakerEmbeddingModel(ABC):
         ...
 
     def compute_embedding_from_array(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
-        """
-        Optional fast path to compute an embedding directly from an in-memory waveform.
-        Defaults to writing to disk via compute_embedding when not overridden.
+        """Compute embedding from an in-memory stereo waveform.
+
+        Default implementation writes to a temp file and delegates to
+        ``compute_embedding``.  Override for a faster in-memory path.
+
+        Args:
+            audio: Stereo audio, channels-first ``[2, N]``.
+            sample_rate: Sample rate of the input audio.
         """
         import soundfile as sf  # Lazy import to avoid adding a hard dependency for mocks.
         import tempfile
 
+        # Contract: audio is [2, N] channels-first; soundfile expects [N, C]
+        wav = audio.T if audio.ndim == 2 else audio
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-            sf.write(tmp.name, audio, sample_rate)
+            sf.write(tmp.name, wav, sample_rate)
             return self.compute_embedding(Path(tmp.name))
 
 
