@@ -28,7 +28,7 @@ eval-fast:
 eval-live:
 	mkdir -p reports/eval
 	$(PYTHON) src/realtime/realtime_inference.py \
-	  --embedding media/enrollments/f75d8385-bedf-4082-babf-1825963c7e69.npy \
+	  --embedding media/enrollments/Derron_enrolment.npy \
 	  --report reports/eval/$(shell date +%Y%m%dT%H%M%S)_live.json \
 	  --threshold-profile dev \
 	  --duration 30 \

@@ -606,10 +606,13 @@ class RealtimeInference:
 
     def set_passthrough(self, enabled: bool) -> None:
         """Toggle passthrough mode at runtime. GIL-atomic bool assignment."""
+        changed = (enabled != self.passthrough_mode)
         self.passthrough_mode = enabled
         if not enabled:
             # Reset model state for clean start when switching to isolation
             self.state = self.model.init_buffers(batch_size=1, device=self.device)
+        if changed:
+            threading.Thread(target=self._play_transparency_sound, daemon=True).start()
 
     def set_embedding(self, embedding_np: np.ndarray) -> None:
         """Swap speaker embedding at runtime. GIL-atomic reference swap."""
@@ -732,7 +735,6 @@ class RealtimeInference:
         from vosk import Model, KaldiRecognizer  # lazy import — vosk not required when disabled
 
         if self._name_detection_model_path is None or not self._name_detection_model_path.exists():
-            print("Name detection: model path missing or invalid, disabling.")
             return
         model = Model(str(self._name_detection_model_path))
         recognizer = KaldiRecognizer(model, self.sample_rate)
@@ -752,26 +754,21 @@ class RealtimeInference:
                     result = json.loads(recognizer.Result())
                     text = (result.get("text") or "").lower().strip()
                     if target in text.split() and not self.passthrough_mode:
-                        self.passthrough_mode = True
-                        print("***NAME DETECTED***")
-                        threading.Thread(target=self._play_transparency_sound, daemon=True).start()
+                        self.set_passthrough(True)
                 else:
                     partial = json.loads(recognizer.PartialResult())
                     text = (partial.get("partial") or "").lower().strip()
                     if text and target in text.split() and not self.passthrough_mode:
-                        self.passthrough_mode = True
-                        print("***NAME DETECTED***")
-                        threading.Thread(target=self._play_transparency_sound, daemon=True).start()
+                        self.set_passthrough(True)
 
             except queue.Empty:
                 continue
             except Exception as e:
-                print(f"Name detection error: {e}")
+                pass
 
     def _play_transparency_sound(self) -> None:
         """Play the transparency sound effect once (in a separate thread)."""
         if not TRANSPARENCY_SOUND_PATH.exists():
-            print("Transparency sound: file not found, skipping.")
             return
         try:
             audio, file_sr = sf.read(str(TRANSPARENCY_SOUND_PATH), dtype="float32")
@@ -790,7 +787,7 @@ class RealtimeInference:
             audio = audio.astype(np.float32)
             sd.play(audio, self.sample_rate, device=self.output_device, blocking=True)
         except Exception as e:
-            print(f"Transparency sound playback failed: {e}")
+            pass
 
     def list_devices(self):
         """List available audio devices."""
@@ -900,9 +897,6 @@ class RealtimeInference:
         print(f"  Input device: {self.input_device or 'default'}")
         print(f"  Output device: {self.output_device or 'default'}")
         print(f"  torch.compile: {'enabled' if self._compiled else 'disabled'}")
-        if self.name_detection_enabled:
-            print(f"  Name detection: ON (target word: {self._name_detection_target})")
-
         self.start()
 
         try:

@@ -1,0 +1,5 @@
+{
+  "embedding_model_id": "resemblyzer",
+  "embedding_model_class": "ResemblyzerSpeakerEmbeddingModel",
+  "sample_rate": 16000
+}

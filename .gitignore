@@ -5,3 +5,10 @@ __pycache__/
 *.DS_Store
 .claude/
 reports/eval/*.json
+
+# Media: ignore all except Derron test enrollment
+media/enrollments/*
+!media/enrollments/Derron_enrolment.npy
+!media/enrollments/Derron_enrolment.wav
+
+src/realtime/mixture.enhanced.wav
