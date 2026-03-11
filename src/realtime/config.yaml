@@ -38,7 +38,7 @@ audio:
   buffer_size_chunks: 4
 
   # Output gain multiplier (1.0 = unity, 2.0 = +6dB, 0.5 = -6dB)
-  output_gain: 1.0
+  output_gain: 20.0
 
 
 # =============================================================================
