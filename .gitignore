@@ -12,3 +12,5 @@ media/enrollments/*
 !media/enrollments/Derron_enrolment.wav
 
 src/realtime/mixture.enhanced.wav
+
+ad-hoc/
