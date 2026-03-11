@@ -6,8 +6,10 @@ import queue
 import socket
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import resampy
@@ -20,6 +22,13 @@ from src.utils import get_torch_device
 
 from .config import Config, TRANSPARENCY_SOUND_PATH
 from .metrics import _ensure_stereo
+
+
+@dataclass
+class ControlCommand:
+    kind: str
+    payload: Any = None
+    manual: bool = False
 
 
 class RealtimeInference:
@@ -64,18 +73,23 @@ class RealtimeInference:
         self.running = False
         self.input_queue = queue.Queue(maxsize=64)
         self.output_queue = queue.Queue(maxsize=64)
+        self._control_queue: queue.Queue[ControlCommand] = queue.Queue()
 
         # Name detection (Vosk) — runs in a separate OS process to avoid GIL contention
         self.name_detection_enabled = config.name_detection.enabled
         self._name_detection_queue: multiprocessing.Queue | None = None
+        self._name_detection_control_queue: multiprocessing.Queue | None = None
         self._name_detection_event: multiprocessing.Event | None = None
         self._name_detection_stop: multiprocessing.Event | None = None
+        self.name_detection_armed = self.name_detection_enabled
         if self.name_detection_enabled:
             self._name_detection_queue = multiprocessing.Queue(maxsize=64)
+            self._name_detection_control_queue = multiprocessing.Queue(maxsize=16)
             self._name_detection_event = multiprocessing.Event()
             self._name_detection_stop = multiprocessing.Event()
             self._name_detection_target = config.name_detection.target_word.lower().strip()
             self._name_detection_model_path = config.name_detection.model_path
+        self._name_detection_grace_period_s = 1.0
 
         # For input level monitoring
         self.recent_input_level = 0.0
@@ -141,6 +155,112 @@ class RealtimeInference:
         self._sq_sum_out = 0.0
         self._total_post_warmup_samples = 0
         self._clipped_post_warmup = 0
+
+    def _make_embedding_tensor(self, embedding_np: np.ndarray) -> torch.Tensor:
+        emb = embedding_np.astype(np.float32).reshape(1, 1, -1)
+        return torch.from_numpy(emb).to(self.device)
+
+    def _silence_chunk(self) -> np.ndarray:
+        return np.zeros((self.chunk_size, self.output_channels), dtype=np.float32)
+
+    def _prefill_output_queue_with_silence(self) -> None:
+        silence = self._silence_chunk()
+        for _ in range(self.buffer_size_chunks * 2):
+            try:
+                self.output_queue.put_nowait(silence.copy())
+            except queue.Full:
+                break
+
+    @staticmethod
+    def _drain_thread_queue(q: queue.Queue) -> None:
+        while True:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                break
+
+    @staticmethod
+    def _drain_process_queue(q: multiprocessing.Queue | None) -> None:
+        if q is None:
+            return
+        while True:
+            try:
+                q.get_nowait()
+            except Exception:
+                break
+
+    def _play_transparency_sound_async(self) -> None:
+        threading.Thread(target=self._play_transparency_sound, daemon=True).start()
+
+    def _reset_runtime_context(self) -> None:
+        self.state = self.model.init_buffers(batch_size=1, device=self.device)
+        self.input_accumulator = np.zeros((0, self.input_channels), dtype=np.float32)
+        self._drain_thread_queue(self.input_queue)
+        self._drain_thread_queue(self.output_queue)
+        self._prefill_output_queue_with_silence()
+
+    def _reset_name_detection_stream(self) -> None:
+        if self._name_detection_event is not None:
+            self._name_detection_event.clear()
+        self._drain_process_queue(self._name_detection_queue)
+        if self._name_detection_control_queue is not None:
+            try:
+                self._name_detection_control_queue.put_nowait(
+                    {"type": "reset", "grace_period_s": self._name_detection_grace_period_s}
+                )
+            except Exception:
+                pass
+
+    def _apply_control_command(self, command: ControlCommand) -> None:
+        if command.kind == "set_embedding":
+            self.embedding = self._make_embedding_tensor(command.payload)
+            self._reset_runtime_context()
+            return
+
+        if command.kind != "set_passthrough":
+            raise ValueError(f"Unknown control command: {command.kind}")
+
+        enabled = bool(command.payload)
+        changed = enabled != self.passthrough_mode
+        self.passthrough_mode = enabled
+
+        if enabled:
+            if self.name_detection_enabled and not command.manual:
+                self.name_detection_armed = False
+                if self._name_detection_event is not None:
+                    self._name_detection_event.clear()
+        else:
+            self.state = self.model.init_buffers(batch_size=1, device=self.device)
+            if self.name_detection_enabled and command.manual:
+                self.name_detection_armed = True
+                self._reset_name_detection_stream()
+
+        self._reset_runtime_context()
+
+        if changed:
+            self._play_transparency_sound_async()
+
+    def _submit_control_command(self, command: ControlCommand) -> None:
+        if self.running and hasattr(self, "_process_thread"):
+            self._control_queue.put(command)
+            return
+        self._apply_control_command(command)
+
+    def _apply_pending_control_commands(self) -> None:
+        while True:
+            try:
+                command = self._control_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._apply_control_command(command)
+
+    def _handle_name_detection_trigger(self) -> None:
+        if self._name_detection_event is None or not self._name_detection_event.is_set():
+            return
+        self._name_detection_event.clear()
+        if not self.name_detection_armed or self.passthrough_mode:
+            return
+        self._apply_control_command(ControlCommand(kind="set_passthrough", payload=True, manual=False))
 
     def _load_model(self, checkpoint_path: Path, config_path: Path) -> None:
         """Load the TFGridNet model from checkpoint."""
@@ -231,6 +351,9 @@ class RealtimeInference:
         Returns:
             Stereo enhanced audio [chunk_size, 2]
         """
+        if audio_chunk.size == 0:
+            return self._silence_chunk()
+
         start_time = time.perf_counter()
 
         # Update input level for monitoring
@@ -339,21 +462,13 @@ class RealtimeInference:
         return output_audio
 
     def set_passthrough(self, enabled: bool) -> None:
-        """Toggle passthrough mode at runtime. GIL-atomic bool assignment."""
-        changed = enabled != self.passthrough_mode
-        self.passthrough_mode = enabled
-        if not enabled:
-            # Reset model state for clean start when switching to isolation
-            self.state = self.model.init_buffers(batch_size=1, device=self.device)
-        if changed:
-            threading.Thread(target=self._play_transparency_sound, daemon=True).start()
+        """Toggle passthrough mode at runtime through the processing thread."""
+        self._submit_control_command(ControlCommand(kind="set_passthrough", payload=enabled, manual=True))
 
     def set_embedding(self, embedding_np: np.ndarray) -> None:
-        """Swap speaker embedding at runtime. GIL-atomic reference swap."""
-        emb = embedding_np.astype(np.float32).reshape(1, 1, -1)
-        self.embedding = torch.from_numpy(emb).to(self.device)
-        # Reset model recurrent state for new speaker
-        self.state = self.model.init_buffers(batch_size=1, device=self.device)
+        """Swap speaker embedding at runtime through the processing thread."""
+        embedding_copy = np.array(embedding_np, copy=True)
+        self._submit_control_command(ControlCommand(kind="set_embedding", payload=embedding_copy))
 
     def start_enrollment_capture(self, duration_s: float) -> None:
         """Begin accumulating input audio for enrollment."""
@@ -422,6 +537,7 @@ class RealtimeInference:
     def _processing_thread(self):
         """Background thread for processing audio chunks."""
         while self.running:
+            self._apply_pending_control_commands()
             try:
                 # Get input audio (blocking with timeout)
                 indata = self.input_queue.get(timeout=0.1)
@@ -436,6 +552,10 @@ class RealtimeInference:
                 required_samples = self.chunk_size + self.stft_pad_size
 
                 while len(self.input_accumulator) >= required_samples:
+                    self._apply_pending_control_commands()
+                    if len(self.input_accumulator) < required_samples:
+                        break
+
                     # Extract chunk and lookahead [samples, input_channels]; _process_chunk normalises to stereo
                     chunk = self.input_accumulator[: self.chunk_size].astype(np.float32)
                     lookahead = self.input_accumulator[self.chunk_size : required_samples].astype(np.float32)
@@ -446,13 +566,7 @@ class RealtimeInference:
                     output = self._process_chunk(chunk, lookahead)
 
                     # Poll Vosk child-process detection event (non-blocking)
-                    if (
-                        self._name_detection_event is not None
-                        and self._name_detection_event.is_set()
-                        and not self.passthrough_mode
-                    ):
-                        self._name_detection_event.clear()
-                        self.set_passthrough(True)
+                    self._handle_name_detection_trigger()
 
                     # Add to output queue
                     try:
@@ -510,9 +624,7 @@ class RealtimeInference:
         self.running = True
 
         # Pre-fill output queue with silence to prevent initial underruns
-        silence = np.zeros((self.chunk_size, self.output_channels), dtype=np.float32)
-        for _ in range(self.buffer_size_chunks * 2):
-            self.output_queue.put(silence)
+        self._prefill_output_queue_with_silence()
 
         self._process_thread = threading.Thread(target=self._processing_thread, daemon=True)
         self._process_thread.start()
@@ -525,6 +637,7 @@ class RealtimeInference:
                 target=vosk_worker,
                 args=(
                     self._name_detection_queue,
+                    self._name_detection_control_queue,
                     self._name_detection_event,
                     self._name_detection_stop,
                     str(self._name_detection_model_path),
