@@ -23,10 +23,10 @@ audio:
 
   # Input device index (null for system default)
   # Run with --list-devices to see available devices
-  input_device: 3
+  input_device: 4
 
   # Output device index (null for system default)
-  output_device: null
+  output_device: 1
 
   # Number of input channels (1 for mono mic, 2 for stereo mic)
   input_channels: 2
@@ -36,6 +36,9 @@ audio:
 
   # Number of chunks to buffer for input (higher = more stable, more latency)
   buffer_size_chunks: 4
+
+  # Output gain multiplier (1.0 = unity, 2.0 = +6dB, 0.5 = -6dB)
+  output_gain: 20.0
 
 
 # =============================================================================

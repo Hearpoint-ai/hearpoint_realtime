@@ -11,6 +11,7 @@ Controls:
 
 import argparse
 import json as _json
+import multiprocessing
 import select
 import sys
 import termios
@@ -18,6 +19,7 @@ import threading
 import time
 import tty
 import uuid
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,12 +48,31 @@ from rich.text import Text
 ENROLLMENT_DURATION = 5.0  # seconds
 
 
+def _compute_embedding_in_process(audio_2xN: np.ndarray, sample_rate: int, model_id: str) -> np.ndarray:
+    """Run embedding computation in a child process (avoids GIL contention).
+
+    Must be a module-level function so it can be pickled by ProcessPoolExecutor.
+    Forces CPU to avoid MPS/GPU conflicts with the parent process.
+    """
+    import os
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+    import torch
+    torch.set_default_device("cpu")
+
+    model = create_embedding_model(model_id)
+    return model.compute_embedding_from_array(audio_2xN, sample_rate)
+
+
 class DemoApp:
     def __init__(self, config: Config, embedding_model_id: str):
         self.engine = RealtimeInference(config)
         self.store = MediaJsonStore(media_root=MEDIA_DIR, data_file=DATA_FILE)
         self.embedding_model_id = embedding_model_id
-        self.embedding_model = None  # lazy-loaded on first enrollment
+        self._embedding_executor = ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=multiprocessing.get_context("spawn"),
+        )
 
         self.current_speaker: str | None = None
         self.mode = "passthrough"
@@ -201,17 +222,17 @@ class DemoApp:
                 # Ensure stereo [N, 2] for persistence and embedding
                 audio = _ensure_stereo(audio)
 
-                # Lazy-load embedding model
-                if self.embedding_model is None:
-                    self.status_message = "Loading embedding model..."
-                    self.embedding_model = create_embedding_model(self.embedding_model_id)
-                    self.status_message = "Computing embedding..."
-
                 # [N, 2] → [2, N] channels-first (standard contract)
                 audio_2xN = audio.T.astype(np.float32)
-                embedding = self.embedding_model.compute_embedding_from_array(
-                    audio_2xN, self.engine.sample_rate
+
+                # Offload CPU-bound embedding to a child process (avoids GIL contention)
+                future = self._embedding_executor.submit(
+                    _compute_embedding_in_process,
+                    audio_2xN,
+                    self.engine.sample_rate,
+                    self.embedding_model_id,
                 )
+                embedding = future.result()
 
                 # Set embedding on engine and switch to isolation
                 self.engine.set_embedding(embedding)
@@ -297,9 +318,13 @@ class DemoApp:
         finally:
             self.running = False
             self.engine.stop()
+            self._embedding_executor.shutdown(wait=False)
 
 
 def main():
+    # Ensure child processes use 'spawn' (default on macOS, explicit for portability)
+    multiprocessing.set_start_method("spawn", force=True)
+
     parser = argparse.ArgumentParser(description="HearPoint interactive real-time demo")
     parser.add_argument(
         "--embedding-model",
