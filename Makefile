@@ -1,4 +1,4 @@
-.PHONY: eval-fast eval-live make-fixture enroll enroll-record demo
+.PHONY: eval-fast eval-live make-fixture enroll enroll-record demo tests
 
 PYTHON ?= /opt/homebrew/anaconda3/envs/hearpoint-realtime/bin/python
 NAME ?= User
@@ -48,3 +48,6 @@ enroll-record:
 
 demo:
 	$(PYTHON) scripts/demo.py
+
+tests:
+	$(PYTHON) -m unittest discover -s src/realtime/tests -v
