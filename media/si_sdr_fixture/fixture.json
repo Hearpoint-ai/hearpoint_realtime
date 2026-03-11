@@ -1,0 +1,15 @@
+{
+  "target": "data/our_speech_pool/Chris.wav",
+  "interferers": [
+    "data/our_speech_pool/Himanshu.wav",
+    "data/our_speech_pool/Sanna.wav"
+  ],
+  "noise": "data/wham_noise/011a0101_0.061105_401c020r_-0.061105.wav",
+  "embedding_model_id": "resemblyzer",
+  "embedding_model_class": "ResemblyzerSpeakerEmbeddingModel",
+  "snr_speech_db": 0.0,
+  "snr_noise_db": 20.0,
+  "duration_s": 10.0,
+  "sample_rate": 16000,
+  "num_samples": 160000
+}

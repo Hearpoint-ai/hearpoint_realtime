@@ -5,7 +5,7 @@
 # =============================================================================
 # Path to speaker embedding .npy file (required)
 # e.g., "/path/to/speaker_embedding.npy"
-embedding: media/enrollments/f75d8385-bedf-4082-babf-1825963c7e69.npy
+embedding: media/enrollments/Derron_enrolment.npy
 
 # Speaker embedding model ID used for enrollment and cosine eval checks
 # Allowed: resemblyzer, tfgridnet
@@ -23,13 +23,13 @@ audio:
 
   # Input device index (null for system default)
   # Run with --list-devices to see available devices
-  input_device: 1
+  input_device: 3
 
   # Output device index (null for system default)
-  output_device: 2
+  output_device: null
 
   # Number of input channels (1 for mono mic, 2 for stereo mic)
-  input_channels: 1
+  input_channels: 2
 
   # Number of output channels (null for auto-detect, 1 for mono, 2 for stereo)
   output_channels: 2
@@ -61,6 +61,18 @@ optimization:
   # Wrap model in torch.compile(mode="reduce-overhead") for graph optimization
   # Falls back gracefully on unsupported backends (e.g. MPS)
   use_torch_compile: false
+
+
+# =============================================================================
+# NAME DETECTION (Vosk)
+# =============================================================================
+# When enabled, a separate thread listens for a target word (e.g. a name) in the
+# same microphone stream and triggers passthrough mode
+name_detection:
+  enabled: false
+  # Path to Vosk model directory (relative to repo root or absolute)
+  model_path: src/models/vosk-model-small-en-us-0.15
+  target_word: matthew
 
 
 # =============================================================================
