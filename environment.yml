@@ -21,3 +21,4 @@ dependencies:
       - pysofaconventions
       - "espnet[all]"
       - sounddevice
+      - vosk
