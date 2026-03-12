@@ -20,6 +20,7 @@ from .config import (
 from .engine import RealtimeInference
 from .file_eval import FileBasedTest
 from .metrics import _evaluate_thresholds, _load_threshold_profile, _write_report
+from .perf_logger import PerformanceLogger
 
 
 def main() -> None:
@@ -187,7 +188,12 @@ Examples:
         mode = "file"
     else:
         # Real-time mode
-        engine = RealtimeInference(config)
+        perf_logger: PerformanceLogger | None = None
+        if config.logging.enabled:
+            perf_logger = PerformanceLogger(config.logging.log_dir)
+            perf_logger.start()
+            print(f"Performance logging enabled: {perf_logger.log_path}")
+        engine = RealtimeInference(config, logger=perf_logger)
         engine.warmup_chunks = args.warmup_chunks
         stats = engine.run(duration=args.duration)
         mode = "live"

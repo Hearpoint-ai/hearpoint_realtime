@@ -96,6 +96,14 @@ class NameDetectionConfig:
 
 
 @dataclass
+class LoggingConfig:
+    """Performance logging configuration."""
+
+    enabled: bool = False
+    log_dir: Path = field(default_factory=lambda: Path("logs/realtime"))
+
+
+@dataclass
 class Config:
     """Complete configuration for real-time inference."""
 
@@ -105,6 +113,7 @@ class Config:
     optimization: OptimizationConfig = field(default_factory=OptimizationConfig)
     test: TestConfig = field(default_factory=TestConfig)
     name_detection: NameDetectionConfig = field(default_factory=NameDetectionConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
     def from_yaml(cls, yaml_path: Path | str) -> "Config":
@@ -135,6 +144,7 @@ class Config:
         opt_data = data.get("optimization", {}) or {}
         test_data = data.get("test", {}) or {}
         name_detection_data = data.get("name_detection", {}) or {}
+        logging_data = data.get("logging", {}) or {}
 
         # Load embedding settings from top-level config
         embedding_path = to_path(data.get("embedding"))
@@ -180,6 +190,10 @@ class Config:
                 enabled=name_detection_data.get("enabled", False),
                 model_path=nd_model_path,
                 target_word=name_detection_data.get("target_word", "matthew"),
+            ),
+            logging=LoggingConfig(
+                enabled=logging_data.get("enabled", False),
+                log_dir=to_path(logging_data.get("log_dir")) or REPO_ROOT / "logs/realtime",
             ),
         )
 

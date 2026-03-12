@@ -29,16 +29,16 @@ audio:
   output_device: null
 
   # Number of input channels (1 for mono mic, 2 for stereo mic)
-  input_channels: 1
+  input_channels: 2
 
   # Number of output channels (null for auto-detect, 1 for mono, 2 for stereo)
-  output_channels: null
+  output_channels: 2
 
   # Number of chunks to buffer for input (higher = more stable, more latency)
   buffer_size_chunks: 4
 
   # Output gain multiplier (1.0 = unity, 2.0 = +6dB, 0.5 = -6dB)
-  output_gain: 20.0
+  output_gain: 3.0
 
 
 # =============================================================================
@@ -72,10 +72,21 @@ optimization:
 # When enabled, a separate thread listens for a target word (e.g. a name) in the
 # same microphone stream and triggers passthrough mode
 name_detection:
-  enabled: false
+  enabled: true
   # Path to Vosk model directory (relative to repo root or absolute)
   model_path: src/models/vosk-model-small-en-us-0.15
-  target_word: matthew
+  target_word: toggle
+
+
+# =============================================================================
+# PERFORMANCE LOGGING
+# =============================================================================
+# When enabled, per-second snapshots and a session summary are written to a
+# JSONL file in log_dir. Logging uses a background thread queue and adds zero
+# latency to the audio processing path.
+logging:
+  enabled: true
+  log_dir: logs/realtime
 
 
 # =============================================================================

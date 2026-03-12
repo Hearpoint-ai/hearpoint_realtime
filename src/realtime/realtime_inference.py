@@ -32,6 +32,7 @@ from src.realtime.config import (
     AudioConfig,
     Config,
     DebugConfig,
+    LoggingConfig,
     ModelConfig,
     NameDetectionConfig,
     OptimizationConfig,
@@ -39,6 +40,7 @@ from src.realtime.config import (
     TRANSPARENCY_SOUND_PATH,
     _normalize_embedding_model_id,
 )
+from src.realtime.perf_logger import PerformanceLogger
 from src.realtime.engine import RealtimeInference
 from src.realtime.file_eval import FileBasedTest
 from src.realtime.metrics import (
@@ -59,9 +61,11 @@ __all__ = [
     "ModelConfig",
     "AudioConfig",
     "DebugConfig",
+    "LoggingConfig",
     "OptimizationConfig",
     "TestConfig",
     "NameDetectionConfig",
+    "PerformanceLogger",
     "RealtimeInference",
     "FileBasedTest",
     "_normalize_embedding_model_id",

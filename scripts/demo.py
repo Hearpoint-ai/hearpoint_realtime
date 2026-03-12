@@ -19,11 +19,14 @@ import threading
 import time
 import tty
 import uuid
+import warnings
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -36,6 +39,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from src.ml.factory import EMBEDDING_MODEL_IDS, create_embedding_model, embedding_model_class_name
 from src.models import Speaker
 from src.persistence import MediaJsonStore
+from src.realtime.perf_logger import PerformanceLogger
 from src.realtime.realtime_inference import Config, RealtimeInference, _ensure_stereo
 
 from rich.console import Console
@@ -65,8 +69,8 @@ def _compute_embedding_in_process(audio_2xN: np.ndarray, sample_rate: int, model
 
 
 class DemoApp:
-    def __init__(self, config: Config, embedding_model_id: str):
-        self.engine = RealtimeInference(config)
+    def __init__(self, config: Config, embedding_model_id: str, logger: PerformanceLogger | None = None):
+        self.engine = RealtimeInference(config, logger=logger)
         self.store = MediaJsonStore(media_root=MEDIA_DIR, data_file=DATA_FILE)
         self.embedding_model_id = embedding_model_id
         self._embedding_executor = ProcessPoolExecutor(
@@ -369,7 +373,12 @@ def main():
     config.debug.passthrough = True
     config.model.embedding = None
 
-    app = DemoApp(config, args.embedding_model)
+    perf_logger: PerformanceLogger | None = None
+    if config.logging.enabled:
+        perf_logger = PerformanceLogger(config.logging.log_dir)
+        perf_logger.start()
+
+    app = DemoApp(config, args.embedding_model, logger=perf_logger)
     app.run()
 
 

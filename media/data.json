@@ -23,6 +23,14 @@
       "embedding_path": "enrollments/b596d108-44f4-4717-906e-060f706edad6.npy",
       "enrollment_audio_path": "enrollments/b596d108-44f4-4717-906e-060f706edad6.wav",
       "processing_ms": null
+    },
+    {
+      "id": "94351a5a-8e6a-429f-9338-d4376ec90708",
+      "name": "Speaker 17:32:42",
+      "created_at": "2026-03-12T21:32:42.718479+00:00",
+      "embedding_path": "enrollments/94351a5a-8e6a-429f-9338-d4376ec90708.npy",
+      "enrollment_audio_path": "enrollments/94351a5a-8e6a-429f-9338-d4376ec90708.wav",
+      "processing_ms": null
     }
   ],
   "recordings": [],

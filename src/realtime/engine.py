@@ -22,6 +22,7 @@ from src.utils import get_torch_device
 
 from .config import Config, TRANSPARENCY_SOUND_PATH
 from .metrics import _ensure_stereo
+from .perf_logger import PerformanceLogger
 
 
 @dataclass
@@ -34,14 +35,16 @@ class ControlCommand:
 class RealtimeInference:
     """Real-time TFGridNet inference engine."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, logger: PerformanceLogger | None = None):
         """
         Initialize real-time inference engine.
 
         Args:
             config: Configuration object containing all parameters.
+            logger: Optional PerformanceLogger for zero-latency stats logging.
         """
         self.config = config
+        self._logger = logger
         self.sample_rate = config.audio.sample_rate
         self.chunk_size = config.audio.chunk_size
         self.input_channels = config.audio.input_channels
@@ -97,10 +100,6 @@ class RealtimeInference:
 
         # Set up device
         self.device = torch.device(config.model.device) if config.model.device else get_torch_device()
-        print(f"Using device: {self.device}")
-
-        if self.passthrough_mode:
-            print("*** PASSTHROUGH MODE - bypassing model ***")
 
         # Always load model (needed for toggling passthrough→isolation at runtime)
         self._load_model(config.get_checkpoint_path(), config.get_model_config_path())
@@ -119,9 +118,8 @@ class RealtimeInference:
             try:
                 self.model = torch.compile(self.model, mode="reduce-overhead")
                 self._compiled = True
-                print("torch.compile enabled (reduce-overhead)")
-            except Exception as e:
-                print(f"torch.compile not available ({e}), continuing without it")
+            except Exception:
+                pass
 
         # Pre-allocate reusable tensors
         self._input_buffer = torch.zeros(
@@ -137,6 +135,9 @@ class RealtimeInference:
 
         # Input accumulator for collecting enough samples before processing
         self.input_accumulator = np.zeros((0, self.input_channels), dtype=np.float32)
+
+        # Logging thread control
+        self._logging_running = False
 
         # Statistics
         self.chunks_processed = 0
@@ -274,8 +275,6 @@ class RealtimeInference:
             config = json.load(fp)
         model_params = config.get("pl_module_args", {}).get("model_params", {})
 
-        print(f"Model parameters: {model_params}")
-
         # Create model
         self.model = Net(**model_params).to(self.device)
 
@@ -297,7 +296,6 @@ class RealtimeInference:
             print(f"Warning: Unexpected keys: {unexpected}")
 
         self.model.eval()
-        print(f"Model loaded from {checkpoint_path}")
 
     def _load_embedding(self, embedding_path: Path) -> None:
         """Load speaker embedding from .npy file."""
@@ -308,7 +306,6 @@ class RealtimeInference:
         # Shape: [1, 1, embed_dim] for batch processing
         embedding = embedding.astype(np.float32).reshape(1, 1, -1)
         self.embedding = torch.from_numpy(embedding).to(self.device)
-        print(f"Loaded embedding from {embedding_path}, shape: {embedding.shape}")
 
     def _validate_device(self, device_index: int, kind: str) -> None:
         """Warn if a specific device index does not exist; no-op when index is None."""
@@ -333,10 +330,8 @@ class RealtimeInference:
             max_channels = device_info.get("max_output_channels", 2)
             # Prefer stereo if available, otherwise use what's supported
             channels = min(2, max_channels)
-            print(f"Output device supports {max_channels} channels, using {channels}")
             return channels
-        except Exception as e:
-            print(f"Warning: Could not detect output channels ({e}), defaulting to 1")
+        except Exception:
             return 1
 
     def _process_chunk(self, audio_chunk: np.ndarray, lookahead: np.ndarray | None = None) -> np.ndarray:
@@ -496,8 +491,6 @@ class RealtimeInference:
 
     def _input_callback(self, indata, frames, time_info, status):
         """Callback for audio input stream."""
-        if status:
-            print(f"Input status: {status}")
 
         if self.running:
             # Add to input queue
@@ -525,8 +518,6 @@ class RealtimeInference:
 
     def _output_callback(self, outdata, frames, time_info, status):
         """Callback for audio output stream."""
-        if status:
-            print(f"Output status: {status}")
 
         try:
             data = self.output_queue.get_nowait()
@@ -585,15 +576,12 @@ class RealtimeInference:
                                 break
                         self.output_queue.put_nowait(output)
                     except queue.Full:
-                        print("Warning: Output queue full, dropping audio")
+                        pass
 
             except queue.Empty:
                 continue
-            except Exception as e:
-                print(f"Processing error: {e}")
-                import traceback
-
-                traceback.print_exc()
+            except Exception:
+                pass
 
     def _play_transparency_sound(self) -> None:
         """Play the transparency sound effect once (in a separate thread)."""
@@ -625,6 +613,47 @@ class RealtimeInference:
         print(f"\nDefault input device: {sd.default.device[0]}")
         print(f"Default output device: {sd.default.device[1]}")
 
+    def _build_snapshot(self, elapsed_s: float) -> dict:
+        """Build a snapshot record from current stats (called from logging thread)."""
+        recent = self.processing_times[-100:]
+        recent_ms = np.array(recent) * 1000
+        chunk_duration = self.chunk_size / self.sample_rate * 1000
+        avg_time = float(np.mean(recent_ms))
+        p50 = float(np.percentile(recent_ms, 50))
+        p95 = float(np.percentile(recent_ms, 95))
+        p99 = float(np.percentile(recent_ms, 99))
+        rtf = avg_time / chunk_duration
+        with self.input_level_lock:
+            level = self.recent_input_level
+        level_db = float(20 * np.log10(level + 1e-10))
+        return {
+            "type": "snapshot",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "elapsed_s": round(elapsed_s, 3),
+            "chunks": self.chunks_processed,
+            "rtf": round(rtf, 4),
+            "latency_ms_avg": round(avg_time, 4),
+            "latency_ms_p50": round(p50, 4),
+            "latency_ms_p95": round(p95, 4),
+            "latency_ms_p99": round(p99, 4),
+            "q_in": self.input_queue.qsize(),
+            "q_out": self.output_queue.qsize(),
+            "drops_input": self.drops_input,
+            "drops_output": self.drops_output,
+            "underruns": self.underruns,
+            "rms_db": round(level_db, 2),
+        }
+
+    def _snapshot_thread_fn(self) -> None:
+        """Background thread: emit a snapshot record every second while running."""
+        start_time = time.perf_counter()
+        while self._logging_running:
+            time.sleep(1.0)
+            if not self._logging_running:
+                break
+            if not self.passthrough_mode and self.processing_times:
+                self._logger.log(self._build_snapshot(time.perf_counter() - start_time))
+
     def start(self) -> None:
         """Open audio streams and start processing. Non-blocking."""
         self.running = True
@@ -634,6 +663,13 @@ class RealtimeInference:
 
         self._process_thread = threading.Thread(target=self._processing_thread, daemon=True)
         self._process_thread.start()
+
+        if self._logger:
+            self._logging_running = True
+            self._snapshot_thread = threading.Thread(
+                target=self._snapshot_thread_fn, daemon=True, name="perf-log-tick"
+            )
+            self._snapshot_thread.start()
 
         self._name_detection_process = None
         if self.name_detection_enabled:
@@ -677,8 +713,11 @@ class RealtimeInference:
     def stop(self) -> dict:
         """Stop streams, join threads, return stats dict."""
         self.running = False
+        self._logging_running = False
         if hasattr(self, "_process_thread"):
             self._process_thread.join(timeout=2.0)
+        if hasattr(self, "_snapshot_thread"):
+            self._snapshot_thread.join(timeout=2.0)
         if getattr(self, "_name_detection_stop", None) is not None:
             self._name_detection_stop.set()
         if getattr(self, "_name_detection_process", None) is not None:
@@ -692,7 +731,11 @@ class RealtimeInference:
                 s.close()
         if self.save_debug_dir and hasattr(self, "debug_inputs") and self.debug_inputs:
             self._save_debug_files()
-        return self._build_stats()
+        stats = self._build_stats()
+        if self._logger:
+            self._logger.log({"type": "summary", **stats})
+            self._logger.stop()
+        return stats
 
     def _build_stats(self) -> dict:
         """Build and return stats dict from accumulated metrics."""
