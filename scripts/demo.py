@@ -79,6 +79,8 @@ class DemoApp:
         self.enroll_start_time: float | None = None
         self.selecting = False
         self._speaker_list: list[Speaker] = []
+        self.naming = False
+        self._name_input_buffer = ""
         self.status_message = "Ready"
         self.running = False
 
@@ -139,13 +141,15 @@ class DemoApp:
         table.add_row("", "")
 
         # Controls
-        controls = Text("[T] Toggle   [E] Enroll   [S] Select   [Q] Quit", style="dim")
+        controls = Text("[T] Toggle   [E] Enroll   [S] Select   [N] Name   [Q] Quit", style="dim")
         table.add_row("", controls)
 
         table.add_row("", "")
 
         # Status / enrollment countdown / selection list
-        if self.enrolling and self.enroll_start_time is not None:
+        if self.naming:
+            status_text = Text(f"Enter name: {self._name_input_buffer}_", style="bold yellow")
+        elif self.enrolling and self.enroll_start_time is not None:
             elapsed = time.time() - self.enroll_start_time
             remaining = max(0, ENROLLMENT_DURATION - elapsed)
             status_text = Text(f"Enrolling... speak now ({remaining:.0f}s remaining)", style="bold yellow")
@@ -165,6 +169,26 @@ class DemoApp:
     def _handle_key(self, ch: str) -> None:
         if self.enrolling:
             return  # ignore keys during enrollment
+
+        if self.naming:
+            if ch in ("\r", "\n"):  # Enter — confirm
+                word = self._name_input_buffer.strip()
+                if word:
+                    self.engine.set_target_word(word)
+                    self.status_message = f"Target name set to: {word}"
+                else:
+                    self.status_message = "Name unchanged (empty input)"
+                self.naming = False
+                self._name_input_buffer = ""
+            elif ch == "\x1b":  # Escape — cancel
+                self.naming = False
+                self._name_input_buffer = ""
+                self.status_message = "Name change cancelled"
+            elif ch == "\x7f":  # Backspace
+                self._name_input_buffer = self._name_input_buffer[:-1]
+            elif ch.isprintable():
+                self._name_input_buffer += ch
+            return
 
         if self.selecting:
             if ch == "\x1b":  # Escape
@@ -189,6 +213,10 @@ class DemoApp:
             self._start_enrollment()
         elif ch in ("s", "S"):
             self._start_selection()
+        elif ch in ("n", "N"):
+            self.naming = True
+            self._name_input_buffer = ""
+            self.status_message = "Type a name and press Enter"
 
     def _toggle_mode(self) -> None:
         if self.engine.embedding is None:

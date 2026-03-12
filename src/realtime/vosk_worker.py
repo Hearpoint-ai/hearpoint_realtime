@@ -57,15 +57,22 @@ def vosk_worker(
             except Exception:
                 break
 
-            if command.get("type") != "reset":
-                continue
+            cmd_type = command.get("type")
 
-            ignore_until = time.monotonic() + float(command.get("grace_period_s", 1.0))
-            detection_event.clear()
-            if hasattr(recognizer, "Reset"):
-                recognizer.Reset()
-            else:
-                recognizer = KaldiRecognizer(model, sample_rate)
+            if cmd_type == "reset":
+                ignore_until = time.monotonic() + float(command.get("grace_period_s", 1.0))
+                detection_event.clear()
+                if hasattr(recognizer, "Reset"):
+                    recognizer.Reset()
+                else:
+                    recognizer = KaldiRecognizer(model, sample_rate)
+            elif cmd_type == "set_target":
+                target = command["word"].lower().strip()
+                detection_event.clear()
+                if hasattr(recognizer, "Reset"):
+                    recognizer.Reset()
+                else:
+                    recognizer = KaldiRecognizer(model, sample_rate)
 
         try:
             chunk = audio_queue.get(timeout=0.1)

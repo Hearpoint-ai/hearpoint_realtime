@@ -465,6 +465,12 @@ class RealtimeInference:
         """Toggle passthrough mode at runtime through the processing thread."""
         self._submit_control_command(ControlCommand(kind="set_passthrough", payload=enabled, manual=True))
 
+    def set_target_word(self, word: str) -> None:
+        """Change the Vosk name-detection target word at runtime."""
+        self._name_detection_target = word.lower().strip()
+        if self._name_detection_control_queue is not None:
+            self._name_detection_control_queue.put({"type": "set_target", "word": self._name_detection_target})
+
     def set_embedding(self, embedding_np: np.ndarray) -> None:
         """Swap speaker embedding at runtime through the processing thread."""
         embedding_copy = np.array(embedding_np, copy=True)
