@@ -142,6 +142,8 @@ class RealtimeInference:
         # Statistics
         self.chunks_processed = 0
         self.processing_times = []
+        self.passthrough_times = []
+        self.isolation_times = []
         self.inference_times = []
         self.prep_times = []
         self.post_times = []
@@ -366,6 +368,7 @@ class RealtimeInference:
             output_audio = np.clip(output_audio, -1.0, 1.0)
             elapsed = time.perf_counter() - start_time
             self.processing_times.append(elapsed)
+            self.passthrough_times.append(elapsed)
             self.chunks_processed += 1
 
             # Save debug files
@@ -428,6 +431,7 @@ class RealtimeInference:
         # Record timing breakdown
         elapsed = t_done - start_time
         self.processing_times.append(elapsed)
+        self.isolation_times.append(elapsed)
         self.prep_times.append(t_infer - t_prep)
         self.inference_times.append(t_post - t_infer)
         self.post_times.append(t_done - t_post)
@@ -752,6 +756,15 @@ class RealtimeInference:
         else:
             rtf_avg = latency_ms_avg = latency_ms_p50 = latency_ms_p95 = latency_ms_p99 = latency_ms_max = 0.0
 
+        # Per-mode RTF averages (warmup excluded from isolation only)
+        iso_times = self.isolation_times[self.warmup_chunks :]
+        rtf_avg_isolation = float(np.mean(np.array(iso_times) * 1000) / chunk_duration_ms) if iso_times else 0.0
+        rtf_avg_passthrough = (
+            float(np.mean(np.array(self.passthrough_times) * 1000) / chunk_duration_ms)
+            if self.passthrough_times
+            else 0.0
+        )
+
         n_pw = self._total_post_warmup_samples
         rms_in = float(np.sqrt(self._sq_sum_in / n_pw)) if n_pw > 0 else 0.0
         rms_out = float(np.sqrt(self._sq_sum_out / n_pw)) if n_pw > 0 else 0.0
@@ -768,6 +781,8 @@ class RealtimeInference:
             "chunks": self.chunks_processed,
             "warmup_chunks_excluded": min(self.warmup_chunks, self.chunks_processed),
             "rtf_avg": rtf_avg,
+            "rtf_avg_isolation": rtf_avg_isolation,
+            "rtf_avg_passthrough": rtf_avg_passthrough,
             "latency_ms_avg": latency_ms_avg,
             "latency_ms_p50": latency_ms_p50,
             "latency_ms_p95": latency_ms_p95,
