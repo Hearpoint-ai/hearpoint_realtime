@@ -75,7 +75,6 @@ class DemoApp:
         )
 
         self.current_speaker: str | None = None
-        self.mode = "passthrough"
         self.enrolling = False
         self.enroll_start_time: float | None = None
         self.selecting = False
@@ -93,7 +92,7 @@ class DemoApp:
         table.add_column("value")
 
         # Mode
-        if self.mode == "passthrough":
+        if self.engine.passthrough_mode:
             mode_text = Text("PASSTHROUGH", style="bold green")
         else:
             mode_text = Text("ISOLATION", style="bold red")
@@ -178,7 +177,6 @@ class DemoApp:
                 self.engine.set_embedding(emb)
                 self.engine.set_passthrough(False)
                 self.current_speaker = spk.name
-                self.mode = "isolation"
                 self.selecting = False
                 self.status_message = f"Selected: {spk.name}. Isolation active."
             return
@@ -198,8 +196,7 @@ class DemoApp:
             return
         is_passthrough = self.engine.passthrough_mode
         self.engine.set_passthrough(not is_passthrough)
-        self.mode = "passthrough" if not is_passthrough else "isolation"
-        self.status_message = f"Mode: {self.mode}"
+        self.status_message = f"Mode: {'passthrough' if not is_passthrough else 'isolation'}"
 
     def _start_enrollment(self) -> None:
         self.enrolling = True
@@ -237,7 +234,6 @@ class DemoApp:
                 # Set embedding on engine and switch to isolation
                 self.engine.set_embedding(embedding)
                 self.engine.set_passthrough(False)
-                self.mode = "isolation"
 
                 # Persist enrollment
                 speaker_id = str(uuid.uuid4())
