@@ -81,8 +81,7 @@ class DemoApp:
         self.current_speaker: str | None = None
         self.enrolling = False
         self.enroll_start_time: float | None = None
-        self.selecting = False
-        self._speaker_list: list[Speaker] = []
+        self._speaker_list: list[Speaker] = self._load_speakers()
         self.naming = False
         self._name_input_buffer = ""
         self.status_message = "Ready"
@@ -104,7 +103,7 @@ class DemoApp:
             mode_text = Text("ISOLATION", style="bold red")
         table.add_row("Mode", mode_text)
 
-        # Speaker
+        # Active speaker
         speaker_text = self.current_speaker or "(none enrolled)"
         table.add_row("Speaker", speaker_text)
 
@@ -112,8 +111,8 @@ class DemoApp:
         with self.engine.input_level_lock:
             level = self.engine.recent_input_level
         level_db = 20 * np.log10(level + 1e-10)
-        bars = int(max(0, min(30, (level_db + 60) / 2)))
-        meter = f"[{'#' * bars}{'.' * (30 - bars)}] {level_db:5.1f} dB"
+        bars = int(max(0, min(40, (level_db + 60) * 40 / 60)))
+        meter = f"[{'█' * bars}{'░' * (40 - bars)}] {level_db:5.1f} dB"
         table.add_row("Level", meter)
 
         table.add_row("", "")
@@ -144,31 +143,39 @@ class DemoApp:
 
         table.add_row("", "")
 
+        # Enrolled speakers — always visible; press number to select
+        if self._speaker_list:
+            lines = []
+            for i, spk in enumerate(self._speaker_list[:9], 1):
+                marker = "▶ " if spk.name == self.current_speaker else "  "
+                lines.append(f"{marker}[{i}] {spk.name}")
+            speakers_text = Text("\n".join(lines), style="cyan")
+        else:
+            speakers_text = Text("(none — press E to enroll)", style="dim")
+        table.add_row("Speakers", speakers_text)
+
+        table.add_row("", "")
+
         # Controls
-        controls = Text("[T] Toggle   [E] Enroll   [S] Select   [N] Name   [Q] Quit", style="dim")
+        controls = Text("[T] Toggle   [E] Enroll   [N] Name   [Q] Quit", style="dim")
         table.add_row("", controls)
 
         table.add_row("", "")
 
-        # Status / enrollment countdown / selection list
+        # Status / enrollment countdown
         if self.naming:
             status_text = Text(f"Enter name: {self._name_input_buffer}_", style="bold yellow")
         elif self.enrolling and self.enroll_start_time is not None:
             elapsed = time.time() - self.enroll_start_time
             remaining = max(0, ENROLLMENT_DURATION - elapsed)
             status_text = Text(f"Enrolling... speak now ({remaining:.0f}s remaining)", style="bold yellow")
-        elif self.selecting and self._speaker_list:
-            lines = ["Select a speaker:"]
-            for i, spk in enumerate(self._speaker_list[:9], 1):
-                lines.append(f"  [{i}] {spk.name}")
-            lines.append("  [Esc] Cancel")
-            status_text = Text("\n".join(lines), style="cyan")
         else:
             status_text = Text(f"Status: {self.status_message}")
 
         table.add_row("", status_text)
 
-        return Panel(table, title="HearPoint Real-Time Demo", border_style="blue", width=55)
+        title = Text(" HearPoint AI ", style="bold bright_cyan reverse")
+        return Panel(table, title=title, border_style="bright_cyan", width=75)
 
     def _handle_key(self, ch: str) -> None:
         if self.enrolling:
@@ -194,18 +201,15 @@ class DemoApp:
                 self._name_input_buffer += ch
             return
 
-        if self.selecting:
-            if ch == "\x1b":  # Escape
-                self.selecting = False
-                self.status_message = "Selection cancelled"
-            elif ch.isdigit() and 1 <= int(ch) <= len(self._speaker_list):
-                idx = int(ch) - 1
+        # Number keys directly select a speaker
+        if ch.isdigit() and ch != "0":
+            idx = int(ch) - 1
+            if idx < len(self._speaker_list):
                 spk = self._speaker_list[idx]
                 emb = np.load(spk.embedding_path)
                 self.engine.set_embedding(emb)
                 self.engine.set_passthrough(False)
                 self.current_speaker = spk.name
-                self.selecting = False
                 self.status_message = f"Selected: {spk.name}. Isolation active."
             return
 
@@ -215,8 +219,6 @@ class DemoApp:
             self._toggle_mode()
         elif ch in ("e", "E"):
             self._start_enrollment()
-        elif ch in ("s", "S"):
-            self._start_selection()
         elif ch in ("n", "N"):
             self.naming = True
             self._name_input_buffer = ""
@@ -300,17 +302,11 @@ class DemoApp:
 
                 self.current_speaker = name
                 self.status_message = f"Enrolled: {name}. Isolation active."
+                self._speaker_list = self._load_speakers()
             except Exception as e:
                 self.status_message = f"Enrollment error: {e}"
 
         threading.Thread(target=_enrollment_worker, daemon=True).start()
-
-    def _start_selection(self) -> None:
-        self._speaker_list = self._load_speakers()
-        if not self._speaker_list:
-            self.status_message = "No enrolled speakers. Press [E] to enroll."
-            return
-        self.selecting = True
 
     def _keypress_thread(self) -> None:
         fd = sys.stdin.fileno()
