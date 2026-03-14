@@ -537,7 +537,21 @@ class RealtimeInference:
 
     def _processing_thread(self):
         """Background thread for processing audio chunks."""
+        INPUT_DRAIN_THRESHOLD = 8  # chunks (~64ms of lag)
+
         while self.running:
+            if self.input_queue.qsize() >= INPUT_DRAIN_THRESHOLD:
+                drained = 0
+                while True:
+                    try:
+                        self.input_queue.get_nowait()
+                        drained += 1
+                    except queue.Empty:
+                        break
+                self.input_accumulator = np.zeros((0, self.input_channels), dtype=np.float32)
+                self.state = self.model.init_buffers(batch_size=1, device=self.device)
+                self.drops_input += drained
+                continue
             self._apply_pending_control_commands()
             try:
                 # Get input audio (blocking with timeout)
