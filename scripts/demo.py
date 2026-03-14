@@ -11,6 +11,7 @@ Controls:
 
 import argparse
 import json as _json
+import logging
 import multiprocessing
 import select
 import sys
@@ -24,9 +25,12 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
-
+# Suppress coremltools version-compatibility log warnings (sklearn, torch)
+# Must happen before any import that transitively loads coremltools.
+logging.getLogger("coremltools").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", category=FutureWarning)
+
+import numpy as np
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -42,7 +46,8 @@ from src.persistence import MediaJsonStore
 from src.realtime.perf_logger import PerformanceLogger
 from src.realtime.realtime_inference import Config, RealtimeInference, _ensure_stereo
 
-from rich.console import Console
+from rich.columns import Columns
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
@@ -92,32 +97,46 @@ class DemoApp:
         return speakers
 
     def _render(self) -> Panel:
+        # ── Build speaker lines for right column ──────────────────────────
+        spk_header = Text("Enrolled Speakers", style="bold bright_cyan")
+        spk_divider = Text("─" * 22, style="dim")
+        if self._speaker_list:
+            spk_rows = []
+            for i, spk in enumerate(self._speaker_list[:9], 1):
+                if spk.name == self.current_speaker:
+                    spk_rows.append(Text(f"▶ [{i}] {spk.name}", style="bold cyan"))
+                else:
+                    spk_rows.append(Text(f"  [{i}] {spk.name}", style="cyan"))
+        else:
+            spk_rows = [Text("(none — press E to enroll)", style="dim")]
+
+        # Pad to a fixed length so the right column height is stable
+        while len(spk_rows) < 9:
+            spk_rows.append(Text(""))
+
+        # right_col[i] maps to table row i
+        right_col = [spk_header, spk_divider] + spk_rows
+
+        def _r(i: int) -> Text:
+            return right_col[i] if i < len(right_col) else Text("")
+
+        # ── 3-column table: label | value | speakers ──────────────────────
         table = Table(show_header=False, box=None, padding=(0, 2))
         table.add_column("key", style="bold", width=12)
-        table.add_column("value")
+        table.add_column("value", width=44)
+        table.add_column("right", width=30, no_wrap=True)
 
-        # Mode
         if self.engine.passthrough_mode:
             mode_text = Text("PASSTHROUGH", style="bold green")
         else:
             mode_text = Text("ISOLATION", style="bold red")
-        table.add_row("Mode", mode_text)
 
-        # Active speaker
-        speaker_text = self.current_speaker or "(none enrolled)"
-        table.add_row("Speaker", speaker_text)
-
-        # Level meter
         with self.engine.input_level_lock:
             level = self.engine.recent_input_level
         level_db = 20 * np.log10(level + 1e-10)
-        bars = int(max(0, min(40, (level_db + 60) * 40 / 60)))
-        meter = f"[{'█' * bars}{'░' * (40 - bars)}] {level_db:5.1f} dB"
-        table.add_row("Level", meter)
+        bars = int(max(0, min(28, (level_db + 60) * 28 / 60)))
+        meter = f"[{'█' * bars}{'░' * (28 - bars)}] {level_db:5.1f} dB"
 
-        table.add_row("", "")
-
-        # Stats
         if self.engine.processing_times:
             recent = self.engine.processing_times[-100:]
             recent_ms = np.array(recent) * 1000
@@ -125,44 +144,30 @@ class DemoApp:
             avg = np.mean(recent_ms)
             rtf = avg / chunk_ms
             p95 = np.percentile(recent_ms, 95)
-
-            table.add_row("RTF", f"{rtf:.3f}")
-            table.add_row("Latency", f"{avg:.1f}ms avg")
-            table.add_row("Chunks", f"{self.engine.chunks_processed:,}")
-            table.add_row("p95", f"{p95:.1f}ms")
-            drops = f"{self.engine.drops_input}/{self.engine.drops_output}"
-            table.add_row("Drops", drops)
-            table.add_row("Underruns", str(self.engine.underruns))
+            stats = [
+                ("RTF",      f"{rtf:.3f}"),
+                ("Latency",  f"{avg:.1f}ms avg"),
+                ("Chunks",   f"{self.engine.chunks_processed:,}"),
+                ("p95",      f"{p95:.1f}ms"),
+                ("Drops",    f"{self.engine.drops_input}/{self.engine.drops_output}"),
+                ("Underruns",str(self.engine.underruns)),
+            ]
         else:
-            table.add_row("RTF", "—")
-            table.add_row("Latency", "—")
-            table.add_row("Chunks", "0")
-            table.add_row("p95", "—")
-            table.add_row("Drops", "0/0")
-            table.add_row("Underruns", "0")
+            stats = [
+                ("RTF",      "—"), ("Latency",  "—"), ("Chunks",   "0"),
+                ("p95",      "—"), ("Drops",    "0/0"), ("Underruns","0"),
+            ]
 
-        table.add_row("", "")
+        controls = Text()
+        for key, label, key_style in [
+            ("[T]", " Toggle  ", "bold bright_cyan"),
+            ("[E]", " Enroll  ", "bold bright_cyan"),
+            ("[N]", " Name  ", "bold bright_cyan"),
+            ("[Q]", " Quit",    "bold red"),
+        ]:
+            controls.append(key, style=key_style)
+            controls.append(label)
 
-        # Enrolled speakers — always visible; press number to select
-        if self._speaker_list:
-            lines = []
-            for i, spk in enumerate(self._speaker_list[:9], 1):
-                marker = "▶ " if spk.name == self.current_speaker else "  "
-                lines.append(f"{marker}[{i}] {spk.name}")
-            speakers_text = Text("\n".join(lines), style="cyan")
-        else:
-            speakers_text = Text("(none — press E to enroll)", style="dim")
-        table.add_row("Speakers", speakers_text)
-
-        table.add_row("", "")
-
-        # Controls
-        controls = Text("[T] Toggle   [E] Enroll   [N] Name   [Q] Quit", style="dim")
-        table.add_row("", controls)
-
-        table.add_row("", "")
-
-        # Status / enrollment countdown
         if self.naming:
             status_text = Text(f"Enter name: {self._name_input_buffer}_", style="bold yellow")
         elif self.enrolling and self.enroll_start_time is not None:
@@ -172,10 +177,21 @@ class DemoApp:
         else:
             status_text = Text(f"Status: {self.status_message}")
 
-        table.add_row("", status_text)
+        # Row layout (right column index in parens)
+        table.add_row("Mode",    mode_text,                              _r(0))
+        table.add_row("Speaker", self.current_speaker or "(none enrolled)", _r(1))
+        table.add_row("Level",   meter,                                  _r(2))
+        table.add_row("",        "",                                     _r(3))
+        for row_i, (lbl, val) in enumerate(stats):
+            table.add_row(lbl, val, _r(4 + row_i))
+        table.add_row("",        "",       _r(10))
+        table.add_row("",        controls, _r(11))
+        table.add_row("",        "",       _r(12) if len(right_col) > 12 else Text(""))
+        table.add_row("",        status_text, Text(""))
 
         title = Text(" HearPoint AI ", style="bold bright_cyan reverse")
-        return Panel(table, title=title, border_style="bright_cyan", width=75)
+        panel = Panel(table, title=title, border_style="bright_cyan", width=100)
+        return Group(Text(_BANNER, style="bold bright_cyan", no_wrap=True), panel)
 
     def _handle_key(self, ch: str) -> None:
         if self.enrolling:
@@ -333,7 +349,7 @@ class DemoApp:
             key_thread = threading.Thread(target=self._keypress_thread, daemon=True)
             key_thread.start()
 
-            with Live(self._render(), refresh_per_second=5, console=console) as live:
+            with Live(self._render(), refresh_per_second=5, console=console, screen=True) as live:
                 while self.running:
                     time.sleep(0.2)
                     live.update(self._render())
@@ -343,6 +359,22 @@ class DemoApp:
             self.running = False
             self.engine.stop()
             self._embedding_executor.shutdown(wait=False)
+
+
+_BANNER = r"""
+ __    __                                                    __             __                   __ 
+|  \  |  \                                                  |  \           |  \                 |  \
+| $$  | $$  ______    ______    ______    ______    ______   \$$ _______  _| $$_        ______   \$$
+| $$__| $$ /      \  |      \  /      \  /      \  /      \ |  \|       \|   $$ \      |      \ |  \
+| $$    $$|  $$$$$$\  \$$$$$$\|  $$$$$$\|  $$$$$$\|  $$$$$$\| $$| $$$$$$$\\$$$$$$       \$$$$$$\| $$
+| $$$$$$$$| $$    $$ /      $$| $$   \$$| $$  | $$| $$  | $$| $$| $$  | $$ | $$ __     /      $$| $$
+| $$  | $$| $$$$$$$$|  $$$$$$$| $$      | $$__/ $$| $$__/ $$| $$| $$  | $$ | $$|  \ __|  $$$$$$$| $$
+| $$  | $$ \$$     \ \$$    $$| $$      | $$    $$ \$$    $$| $$| $$  | $$  \$$  $$|  \\$$    $$| $$
+ \$$   \$$  \$$$$$$$  \$$$$$$$ \$$      | $$$$$$$   \$$$$$$  \$$ \$$   \$$   \$$$$  \$$ \$$$$$$$ \$$
+                                        | $$                                                        
+                                        | $$                                                        
+                                         \$$                                                        
+"""
 
 
 def main():

@@ -75,6 +75,8 @@ class OptimizationConfig:
     """Performance optimization configuration."""
 
     use_torch_compile: bool = False
+    use_coreml: bool = False
+    coreml_model_path: Path | None = None
 
 
 @dataclass
@@ -180,6 +182,8 @@ class Config:
             ),
             optimization=OptimizationConfig(
                 use_torch_compile=opt_data.get("use_torch_compile", False),
+                use_coreml=opt_data.get("use_coreml", False),
+                coreml_model_path=to_path(opt_data.get("coreml_model_path")),
             ),
             test=TestConfig(
                 enabled=test_data.get("enabled", False),

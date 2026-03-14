@@ -21,6 +21,7 @@ from src.models.tfgridnet_realtime.net import Net
 from src.utils import get_torch_device
 
 from .config import Config, TRANSPARENCY_SOUND_PATH
+from .coreml_support import CoreMLModel
 from .metrics import _ensure_stereo
 from .perf_logger import PerformanceLogger
 
@@ -101,8 +102,14 @@ class RealtimeInference:
         # Set up device
         self.device = torch.device(config.model.device) if config.model.device else get_torch_device()
 
+        self._using_coreml = False  # updated by _load_model
+
         # Always load model (needed for toggling passthrough→isolation at runtime)
-        self._load_model(config.get_checkpoint_path(), config.get_model_config_path())
+        self._load_model(
+            config.get_checkpoint_path(),
+            config.get_model_config_path(),
+            coreml_path=config.optimization.coreml_model_path if config.optimization.use_coreml else None,
+        )
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
         self.stft_pad_size = self.model.stft_pad_size
 
@@ -265,26 +272,38 @@ class RealtimeInference:
             return
         self._apply_control_command(ControlCommand(kind="set_passthrough", payload=True, manual=False))
 
-    def _load_model(self, checkpoint_path: Path, config_path: Path) -> None:
-        """Load the TFGridNet model from checkpoint."""
+    def _load_model(
+        self,
+        checkpoint_path: Path,
+        config_path: Path,
+        coreml_path: Path | None = None,
+    ) -> None:
+        """Load the TFGridNet model from checkpoint, or a CoreML .mlpackage if requested."""
+        # --- CoreML path ---
+        if coreml_path is not None:
+            try:
+                self.model = CoreMLModel(coreml_path)
+                self._using_coreml = True
+                return
+            except Exception as e:
+                print(f"Warning: CoreML load failed ({e}), falling back to PyTorch.")
+
+        # --- PyTorch path ---
+        self._using_coreml = False
         if not config_path.exists():
             raise FileNotFoundError(f"Config not found: {config_path}")
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-        # Load config
         with config_path.open() as fp:
             config = json.load(fp)
         model_params = config.get("pl_module_args", {}).get("model_params", {})
 
-        # Create model
         self.model = Net(**model_params).to(self.device)
 
-        # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         state_dict = checkpoint.get("model_state_dict") or checkpoint.get("state_dict") or checkpoint
 
-        # Strip common wrapper prefixes
         prefixes = ("model.model.", "model.", "module.")
         for pref in prefixes:
             if all(k.startswith(pref) for k in state_dict.keys()):
@@ -402,7 +421,7 @@ class RealtimeInference:
 
         # --- Inference ---
         t_infer = time.perf_counter()
-        with torch.inference_mode():
+        if self._using_coreml:
             output, self.state = self.model.predict(
                 self._input_buffer,
                 self.embedding[:, 0],
@@ -410,6 +429,15 @@ class RealtimeInference:
                 pad=True,
                 lookahead_audio=la_tensor,
             )
+        else:
+            with torch.inference_mode():
+                output, self.state = self.model.predict(
+                    self._input_buffer,
+                    self.embedding[:, 0],
+                    self.state,
+                    pad=True,
+                    lookahead_audio=la_tensor,
+                )
 
         # --- Post: tensor -> numpy ---
         t_post = time.perf_counter()
@@ -788,7 +816,7 @@ class RealtimeInference:
             "mode": "live",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "host_id": socket.gethostname(),
-            "device": str(self.device),
+            "device": "coreml" if self._using_coreml else str(self.device),
             "sample_rate": self.sample_rate,
             "chunk_size": self.chunk_size,
             "stft_pad_size_samples": self.stft_pad_size if not self.passthrough_mode else 0,
@@ -821,6 +849,7 @@ class RealtimeInference:
         print(f"  Input device: {self.input_device or 'default'}")
         print(f"  Output device: {self.output_device or 'default'}")
         print(f"  torch.compile: {'enabled' if self._compiled else 'disabled'}")
+        print(f"  CoreML (ANE): {'enabled' if self._using_coreml else 'disabled'}")
         self.start()
 
         try:

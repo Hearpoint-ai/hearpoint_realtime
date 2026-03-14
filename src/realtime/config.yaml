@@ -65,6 +65,12 @@ optimization:
   # Falls back gracefully on unsupported backends (e.g. MPS)
   use_torch_compile: false
 
+  # Use pre-exported CoreML model (.mlpackage) for ANE-accelerated inference.
+  # Export first: python src/tools/export_coreml.py
+  # Then set use_coreml: true and point coreml_model_path at the output file.
+  use_coreml: true
+  coreml_model_path: checkpoints/tfgridnet_streaming.mlpackage  # e.g. "checkpoints/tfgridnet_streaming.mlpackage"
+
 
 # =============================================================================
 # NAME DETECTION (Vosk)

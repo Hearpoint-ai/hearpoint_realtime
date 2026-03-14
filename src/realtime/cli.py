@@ -23,9 +23,37 @@ from .metrics import _evaluate_thresholds, _load_threshold_profile, _write_repor
 from .perf_logger import PerformanceLogger
 
 
+_BANNER = r"""
+ __    __                                                    __             __                   __
+|  \  |  \                                                  |  \           |  \                 |  \
+| $  | $  ______    ______    ______    ______    ______   \$ _______  _| $_        ______   \$
+| $__| $ /      \  |      \  /      \  /      \  /      \ |  \|       \|   $ \      |      \ |  \
+| $    $|  $$$\  \$$$\|  $$$\|  $$$\|  $$$\| $| $$$$\\$$$       \$$$\| $
+| $$$$| $    $ /      $| $   \$| $  | $| $  | $| $| $  | $ | $ __     /      $| $
+| $  | $| $$$$|  $$$$| $      | $__/ $| $__/ $| $| $  | $ | $|  \ __|  $$$$| $
+| $  | $ \$     \ \$    $| $      | $    $ \$    $| $| $  | $  \$  $|  \\$    $| $
+ \$   \$  \$$$$  \$$$$ \$      | $$$$   \$$$  \$ \$   \$   \$$  \$ \$$$$ \$
+                                        | $
+                                        | $
+                                         \$
+"""
+
+_TAGLINE = "  Real-time target-speech extraction  |  github.com/hearpoint"
+_DIVIDER = "─" * 72
+
+
+def _print_banner() -> None:
+    print(_BANNER)
+    print(_TAGLINE)
+    print(_DIVIDER)
+    print()
+
+
 def main() -> None:
     # Ensure child processes use 'spawn' (default on macOS, explicit for portability)
     multiprocessing.set_start_method("spawn", force=True)
+
+    _print_banner()
 
     parser = argparse.ArgumentParser(
         description="Real-time TFGridNet inference for target speech extraction",
