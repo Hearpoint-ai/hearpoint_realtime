@@ -13,6 +13,7 @@ import argparse
 import json as _json
 import logging
 import multiprocessing
+import os
 import select
 import sys
 import termios
@@ -328,15 +329,22 @@ class DemoApp:
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         try:
-            # cbreak mode: disables line buffering + echo for single-char reads,
-            # but keeps OPOST enabled so Rich's ANSI output works correctly.
             tty.setcbreak(fd)
+            cbreak_attrs = termios.tcgetattr(fd)
             while self.running:
+                # Re-apply cbreak if something (e.g. a spawned child process)
+                # reset the terminal to cooked mode.
+                if termios.tcgetattr(fd) != cbreak_attrs:
+                    tty.setcbreak(fd)
+                    cbreak_attrs = termios.tcgetattr(fd)
                 rlist, _, _ = select.select([fd], [], [], 0.1)
                 if rlist:
-                    ch = sys.stdin.read(1)
+                    ch = os.read(fd, 1).decode("utf-8", errors="ignore")
                     if ch:
-                        self._handle_key(ch)
+                        try:
+                            self._handle_key(ch)
+                        except Exception:
+                            pass
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
