@@ -21,7 +21,9 @@ from src.models.tfgridnet_realtime.net import Net
 from src.utils import get_torch_device
 
 from .config import Config, TRANSPARENCY_SOUND_PATH
+from .coreml_support import CoreMLModel
 from .metrics import _ensure_stereo
+from .perf_logger import PerformanceLogger
 
 
 @dataclass
@@ -34,14 +36,16 @@ class ControlCommand:
 class RealtimeInference:
     """Real-time TFGridNet inference engine."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, logger: PerformanceLogger | None = None):
         """
         Initialize real-time inference engine.
 
         Args:
             config: Configuration object containing all parameters.
+            logger: Optional PerformanceLogger for zero-latency stats logging.
         """
         self.config = config
+        self._logger = logger
         self.sample_rate = config.audio.sample_rate
         self.chunk_size = config.audio.chunk_size
         self.input_channels = config.audio.input_channels
@@ -97,13 +101,15 @@ class RealtimeInference:
 
         # Set up device
         self.device = torch.device(config.model.device) if config.model.device else get_torch_device()
-        print(f"Using device: {self.device}")
 
-        if self.passthrough_mode:
-            print("*** PASSTHROUGH MODE - bypassing model ***")
+        self._using_coreml = False  # updated by _load_model
 
         # Always load model (needed for toggling passthrough→isolation at runtime)
-        self._load_model(config.get_checkpoint_path(), config.get_model_config_path())
+        self._load_model(
+            config.get_checkpoint_path(),
+            config.get_model_config_path(),
+            coreml_path=config.optimization.coreml_model_path if config.optimization.use_coreml else None,
+        )
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
         self.stft_pad_size = self.model.stft_pad_size
 
@@ -119,9 +125,8 @@ class RealtimeInference:
             try:
                 self.model = torch.compile(self.model, mode="reduce-overhead")
                 self._compiled = True
-                print("torch.compile enabled (reduce-overhead)")
-            except Exception as e:
-                print(f"torch.compile not available ({e}), continuing without it")
+            except Exception:
+                pass
 
         # Pre-allocate reusable tensors
         self._input_buffer = torch.zeros(
@@ -138,9 +143,14 @@ class RealtimeInference:
         # Input accumulator for collecting enough samples before processing
         self.input_accumulator = np.zeros((0, self.input_channels), dtype=np.float32)
 
+        # Logging thread control
+        self._logging_running = False
+
         # Statistics
         self.chunks_processed = 0
         self.processing_times = []
+        self.passthrough_times = []
+        self.isolation_times = []
         self.inference_times = []
         self.prep_times = []
         self.post_times = []
@@ -262,28 +272,38 @@ class RealtimeInference:
             return
         self._apply_control_command(ControlCommand(kind="set_passthrough", payload=True, manual=False))
 
-    def _load_model(self, checkpoint_path: Path, config_path: Path) -> None:
-        """Load the TFGridNet model from checkpoint."""
+    def _load_model(
+        self,
+        checkpoint_path: Path,
+        config_path: Path,
+        coreml_path: Path | None = None,
+    ) -> None:
+        """Load the TFGridNet model from checkpoint, or a CoreML .mlpackage if requested."""
+        # --- CoreML path ---
+        if coreml_path is not None:
+            try:
+                self.model = CoreMLModel(coreml_path)
+                self._using_coreml = True
+                return
+            except Exception as e:
+                print(f"Warning: CoreML load failed ({e}), falling back to PyTorch.")
+
+        # --- PyTorch path ---
+        self._using_coreml = False
         if not config_path.exists():
             raise FileNotFoundError(f"Config not found: {config_path}")
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-        # Load config
         with config_path.open() as fp:
             config = json.load(fp)
         model_params = config.get("pl_module_args", {}).get("model_params", {})
 
-        print(f"Model parameters: {model_params}")
-
-        # Create model
         self.model = Net(**model_params).to(self.device)
 
-        # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         state_dict = checkpoint.get("model_state_dict") or checkpoint.get("state_dict") or checkpoint
 
-        # Strip common wrapper prefixes
         prefixes = ("model.model.", "model.", "module.")
         for pref in prefixes:
             if all(k.startswith(pref) for k in state_dict.keys()):
@@ -297,7 +317,6 @@ class RealtimeInference:
             print(f"Warning: Unexpected keys: {unexpected}")
 
         self.model.eval()
-        print(f"Model loaded from {checkpoint_path}")
 
     def _load_embedding(self, embedding_path: Path) -> None:
         """Load speaker embedding from .npy file."""
@@ -308,7 +327,6 @@ class RealtimeInference:
         # Shape: [1, 1, embed_dim] for batch processing
         embedding = embedding.astype(np.float32).reshape(1, 1, -1)
         self.embedding = torch.from_numpy(embedding).to(self.device)
-        print(f"Loaded embedding from {embedding_path}, shape: {embedding.shape}")
 
     def _validate_device(self, device_index: int, kind: str) -> None:
         """Warn if a specific device index does not exist; no-op when index is None."""
@@ -333,10 +351,8 @@ class RealtimeInference:
             max_channels = device_info.get("max_output_channels", 2)
             # Prefer stereo if available, otherwise use what's supported
             channels = min(2, max_channels)
-            print(f"Output device supports {max_channels} channels, using {channels}")
             return channels
-        except Exception as e:
-            print(f"Warning: Could not detect output channels ({e}), defaulting to 1")
+        except Exception:
             return 1
 
     def _process_chunk(self, audio_chunk: np.ndarray, lookahead: np.ndarray | None = None) -> np.ndarray:
@@ -371,6 +387,7 @@ class RealtimeInference:
             output_audio = np.clip(output_audio, -1.0, 1.0)
             elapsed = time.perf_counter() - start_time
             self.processing_times.append(elapsed)
+            self.passthrough_times.append(elapsed)
             self.chunks_processed += 1
 
             # Save debug files
@@ -404,7 +421,7 @@ class RealtimeInference:
 
         # --- Inference ---
         t_infer = time.perf_counter()
-        with torch.inference_mode():
+        if self._using_coreml:
             output, self.state = self.model.predict(
                 self._input_buffer,
                 self.embedding[:, 0],
@@ -412,6 +429,15 @@ class RealtimeInference:
                 pad=True,
                 lookahead_audio=la_tensor,
             )
+        else:
+            with torch.inference_mode():
+                output, self.state = self.model.predict(
+                    self._input_buffer,
+                    self.embedding[:, 0],
+                    self.state,
+                    pad=True,
+                    lookahead_audio=la_tensor,
+                )
 
         # --- Post: tensor -> numpy ---
         t_post = time.perf_counter()
@@ -433,6 +459,7 @@ class RealtimeInference:
         # Record timing breakdown
         elapsed = t_done - start_time
         self.processing_times.append(elapsed)
+        self.isolation_times.append(elapsed)
         self.prep_times.append(t_infer - t_prep)
         self.inference_times.append(t_post - t_infer)
         self.post_times.append(t_done - t_post)
@@ -496,8 +523,6 @@ class RealtimeInference:
 
     def _input_callback(self, indata, frames, time_info, status):
         """Callback for audio input stream."""
-        if status:
-            print(f"Input status: {status}")
 
         if self.running:
             # Add to input queue
@@ -525,8 +550,6 @@ class RealtimeInference:
 
     def _output_callback(self, outdata, frames, time_info, status):
         """Callback for audio output stream."""
-        if status:
-            print(f"Output status: {status}")
 
         try:
             data = self.output_queue.get_nowait()
@@ -542,7 +565,21 @@ class RealtimeInference:
 
     def _processing_thread(self):
         """Background thread for processing audio chunks."""
+        INPUT_DRAIN_THRESHOLD = 8  # chunks (~64ms of lag)
+
         while self.running:
+            if self.input_queue.qsize() >= INPUT_DRAIN_THRESHOLD:
+                drained = 0
+                while True:
+                    try:
+                        self.input_queue.get_nowait()
+                        drained += 1
+                    except queue.Empty:
+                        break
+                self.input_accumulator = np.zeros((0, self.input_channels), dtype=np.float32)
+                self.state = self.model.init_buffers(batch_size=1, device=self.device)
+                self.drops_input += drained
+                continue
             self._apply_pending_control_commands()
             try:
                 # Get input audio (blocking with timeout)
@@ -585,15 +622,12 @@ class RealtimeInference:
                                 break
                         self.output_queue.put_nowait(output)
                     except queue.Full:
-                        print("Warning: Output queue full, dropping audio")
+                        pass
 
             except queue.Empty:
                 continue
-            except Exception as e:
-                print(f"Processing error: {e}")
-                import traceback
-
-                traceback.print_exc()
+            except Exception:
+                pass
 
     def _play_transparency_sound(self) -> None:
         """Play the transparency sound effect once (in a separate thread)."""
@@ -625,6 +659,47 @@ class RealtimeInference:
         print(f"\nDefault input device: {sd.default.device[0]}")
         print(f"Default output device: {sd.default.device[1]}")
 
+    def _build_snapshot(self, elapsed_s: float) -> dict:
+        """Build a snapshot record from current stats (called from logging thread)."""
+        recent = self.processing_times[-100:]
+        recent_ms = np.array(recent) * 1000
+        chunk_duration = self.chunk_size / self.sample_rate * 1000
+        avg_time = float(np.mean(recent_ms))
+        p50 = float(np.percentile(recent_ms, 50))
+        p95 = float(np.percentile(recent_ms, 95))
+        p99 = float(np.percentile(recent_ms, 99))
+        rtf = avg_time / chunk_duration
+        with self.input_level_lock:
+            level = self.recent_input_level
+        level_db = float(20 * np.log10(level + 1e-10))
+        return {
+            "type": "snapshot",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "elapsed_s": round(elapsed_s, 3),
+            "chunks": self.chunks_processed,
+            "rtf": round(rtf, 4),
+            "latency_ms_avg": round(avg_time, 4),
+            "latency_ms_p50": round(p50, 4),
+            "latency_ms_p95": round(p95, 4),
+            "latency_ms_p99": round(p99, 4),
+            "q_in": self.input_queue.qsize(),
+            "q_out": self.output_queue.qsize(),
+            "drops_input": self.drops_input,
+            "drops_output": self.drops_output,
+            "underruns": self.underruns,
+            "rms_db": round(level_db, 2),
+        }
+
+    def _snapshot_thread_fn(self) -> None:
+        """Background thread: emit a snapshot record every second while running."""
+        start_time = time.perf_counter()
+        while self._logging_running:
+            time.sleep(1.0)
+            if not self._logging_running:
+                break
+            if not self.passthrough_mode and self.processing_times:
+                self._logger.log(self._build_snapshot(time.perf_counter() - start_time))
+
     def start(self) -> None:
         """Open audio streams and start processing. Non-blocking."""
         self.running = True
@@ -634,6 +709,13 @@ class RealtimeInference:
 
         self._process_thread = threading.Thread(target=self._processing_thread, daemon=True)
         self._process_thread.start()
+
+        if self._logger:
+            self._logging_running = True
+            self._snapshot_thread = threading.Thread(
+                target=self._snapshot_thread_fn, daemon=True, name="perf-log-tick"
+            )
+            self._snapshot_thread.start()
 
         self._name_detection_process = None
         if self.name_detection_enabled:
@@ -677,8 +759,11 @@ class RealtimeInference:
     def stop(self) -> dict:
         """Stop streams, join threads, return stats dict."""
         self.running = False
+        self._logging_running = False
         if hasattr(self, "_process_thread"):
             self._process_thread.join(timeout=2.0)
+        if hasattr(self, "_snapshot_thread"):
+            self._snapshot_thread.join(timeout=2.0)
         if getattr(self, "_name_detection_stop", None) is not None:
             self._name_detection_stop.set()
         if getattr(self, "_name_detection_process", None) is not None:
@@ -692,7 +777,11 @@ class RealtimeInference:
                 s.close()
         if self.save_debug_dir and hasattr(self, "debug_inputs") and self.debug_inputs:
             self._save_debug_files()
-        return self._build_stats()
+        stats = self._build_stats()
+        if self._logger:
+            self._logger.log({"type": "summary", **stats})
+            self._logger.stop()
+        return stats
 
     def _build_stats(self) -> dict:
         """Build and return stats dict from accumulated metrics."""
@@ -709,6 +798,15 @@ class RealtimeInference:
         else:
             rtf_avg = latency_ms_avg = latency_ms_p50 = latency_ms_p95 = latency_ms_p99 = latency_ms_max = 0.0
 
+        # Per-mode RTF averages (warmup excluded from isolation only)
+        iso_times = self.isolation_times[self.warmup_chunks :]
+        rtf_avg_isolation = float(np.mean(np.array(iso_times) * 1000) / chunk_duration_ms) if iso_times else 0.0
+        rtf_avg_passthrough = (
+            float(np.mean(np.array(self.passthrough_times) * 1000) / chunk_duration_ms)
+            if self.passthrough_times
+            else 0.0
+        )
+
         n_pw = self._total_post_warmup_samples
         rms_in = float(np.sqrt(self._sq_sum_in / n_pw)) if n_pw > 0 else 0.0
         rms_out = float(np.sqrt(self._sq_sum_out / n_pw)) if n_pw > 0 else 0.0
@@ -718,13 +816,15 @@ class RealtimeInference:
             "mode": "live",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "host_id": socket.gethostname(),
-            "device": str(self.device),
+            "device": "coreml" if self._using_coreml else str(self.device),
             "sample_rate": self.sample_rate,
             "chunk_size": self.chunk_size,
             "stft_pad_size_samples": self.stft_pad_size if not self.passthrough_mode else 0,
             "chunks": self.chunks_processed,
             "warmup_chunks_excluded": min(self.warmup_chunks, self.chunks_processed),
             "rtf_avg": rtf_avg,
+            "rtf_avg_isolation": rtf_avg_isolation,
+            "rtf_avg_passthrough": rtf_avg_passthrough,
             "latency_ms_avg": latency_ms_avg,
             "latency_ms_p50": latency_ms_p50,
             "latency_ms_p95": latency_ms_p95,
@@ -749,6 +849,7 @@ class RealtimeInference:
         print(f"  Input device: {self.input_device or 'default'}")
         print(f"  Output device: {self.output_device or 'default'}")
         print(f"  torch.compile: {'enabled' if self._compiled else 'disabled'}")
+        print(f"  CoreML (ANE): {'enabled' if self._using_coreml else 'disabled'}")
         self.start()
 
         try:

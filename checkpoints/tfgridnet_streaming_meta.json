@@ -1,0 +1,202 @@
+{
+  "mode": "nn_only",
+  "n_blocks": 3,
+  "n_srcs": 2,
+  "nn_state_names": [
+    "conv_buf",
+    "deconv_buf",
+    "b0_K_buf",
+    "b0_V_buf",
+    "b0_c0",
+    "b0_h0",
+    "b1_K_buf",
+    "b1_V_buf",
+    "b1_c0",
+    "b1_h0",
+    "b2_K_buf",
+    "b2_V_buf",
+    "b2_c0",
+    "b2_h0"
+  ],
+  "nn_state_shapes": {
+    "conv_buf": [
+      1,
+      4,
+      2,
+      97
+    ],
+    "deconv_buf": [
+      1,
+      64,
+      2,
+      97
+    ],
+    "b0_K_buf": [
+      4,
+      49,
+      582
+    ],
+    "b0_V_buf": [
+      4,
+      49,
+      1552
+    ],
+    "b0_c0": [
+      1,
+      97,
+      64
+    ],
+    "b0_h0": [
+      1,
+      97,
+      64
+    ],
+    "b1_K_buf": [
+      4,
+      49,
+      582
+    ],
+    "b1_V_buf": [
+      4,
+      49,
+      1552
+    ],
+    "b1_c0": [
+      1,
+      97,
+      64
+    ],
+    "b1_h0": [
+      1,
+      97,
+      64
+    ],
+    "b2_K_buf": [
+      4,
+      49,
+      582
+    ],
+    "b2_V_buf": [
+      4,
+      49,
+      1552
+    ],
+    "b2_c0": [
+      1,
+      97,
+      64
+    ],
+    "b2_h0": [
+      1,
+      97,
+      64
+    ]
+  },
+  "full_state_shapes": {
+    "conv_buf": [
+      1,
+      4,
+      2,
+      97
+    ],
+    "deconv_buf": [
+      1,
+      64,
+      2,
+      97
+    ],
+    "istft_buf": [
+      1,
+      2,
+      194,
+      1
+    ],
+    "b0_K_buf": [
+      4,
+      49,
+      582
+    ],
+    "b0_V_buf": [
+      4,
+      49,
+      1552
+    ],
+    "b0_c0": [
+      1,
+      97,
+      64
+    ],
+    "b0_h0": [
+      1,
+      97,
+      64
+    ],
+    "b1_K_buf": [
+      4,
+      49,
+      582
+    ],
+    "b1_V_buf": [
+      4,
+      49,
+      1552
+    ],
+    "b1_c0": [
+      1,
+      97,
+      64
+    ],
+    "b1_h0": [
+      1,
+      97,
+      64
+    ],
+    "b2_K_buf": [
+      4,
+      49,
+      582
+    ],
+    "b2_V_buf": [
+      4,
+      49,
+      1552
+    ],
+    "b2_c0": [
+      1,
+      97,
+      64
+    ],
+    "b2_h0": [
+      1,
+      97,
+      64
+    ]
+  },
+  "stft_pad_size": 64,
+  "stft_chunk_size": 128,
+  "n_fft": 192,
+  "n_freqs": 97,
+  "istft_lookback": 1,
+  "output_names": [
+    "deconv_out",
+    "new_conv_buf",
+    "new_deconv_buf",
+    "new_b0_K_buf",
+    "new_b0_V_buf",
+    "new_b0_c0",
+    "new_b0_h0",
+    "new_b1_K_buf",
+    "new_b1_V_buf",
+    "new_b1_c0",
+    "new_b1_h0",
+    "new_b2_K_buf",
+    "new_b2_V_buf",
+    "new_b2_c0",
+    "new_b2_h0"
+  ],
+  "enc_dec_params": {
+    "n_fft": 192,
+    "stride": 128,
+    "window_type": "hann"
+  }
+}

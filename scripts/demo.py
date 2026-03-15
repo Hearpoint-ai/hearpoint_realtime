@@ -11,7 +11,9 @@ Controls:
 
 import argparse
 import json as _json
+import logging
 import multiprocessing
+import os
 import select
 import sys
 import termios
@@ -19,9 +21,15 @@ import threading
 import time
 import tty
 import uuid
+import warnings
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Suppress coremltools version-compatibility log warnings (sklearn, torch)
+# Must happen before any import that transitively loads coremltools.
+logging.getLogger("coremltools").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 import numpy as np
 
@@ -36,9 +44,11 @@ sys.path.insert(0, str(REPO_ROOT))
 from src.ml.factory import EMBEDDING_MODEL_IDS, create_embedding_model, embedding_model_class_name
 from src.models import Speaker
 from src.persistence import MediaJsonStore
+from src.realtime.perf_logger import PerformanceLogger
 from src.realtime.realtime_inference import Config, RealtimeInference, _ensure_stereo
 
-from rich.console import Console
+from rich.columns import Columns
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
@@ -65,8 +75,8 @@ def _compute_embedding_in_process(audio_2xN: np.ndarray, sample_rate: int, model
 
 
 class DemoApp:
-    def __init__(self, config: Config, embedding_model_id: str):
-        self.engine = RealtimeInference(config)
+    def __init__(self, config: Config, embedding_model_id: str, logger: PerformanceLogger | None = None):
+        self.engine = RealtimeInference(config, logger=logger)
         self.store = MediaJsonStore(media_root=MEDIA_DIR, data_file=DATA_FILE)
         self.embedding_model_id = embedding_model_id
         self._embedding_executor = ProcessPoolExecutor(
@@ -77,8 +87,7 @@ class DemoApp:
         self.current_speaker: str | None = None
         self.enrolling = False
         self.enroll_start_time: float | None = None
-        self.selecting = False
-        self._speaker_list: list[Speaker] = []
+        self._speaker_list: list[Speaker] = self._load_speakers()
         self.naming = False
         self._name_input_buffer = ""
         self.status_message = "Ready"
@@ -89,32 +98,46 @@ class DemoApp:
         return speakers
 
     def _render(self) -> Panel:
+        # ── Build speaker lines for right column ──────────────────────────
+        spk_header = Text("Enrolled Speakers", style="bold bright_cyan")
+        spk_divider = Text("─" * 22, style="dim")
+        if self._speaker_list:
+            spk_rows = []
+            for i, spk in enumerate(self._speaker_list[:9], 1):
+                if spk.name == self.current_speaker:
+                    spk_rows.append(Text(f"▶ [{i}] {spk.name}", style="bold cyan"))
+                else:
+                    spk_rows.append(Text(f"  [{i}] {spk.name}", style="cyan"))
+        else:
+            spk_rows = [Text("(none — press E to enroll)", style="dim")]
+
+        # Pad to a fixed length so the right column height is stable
+        while len(spk_rows) < 9:
+            spk_rows.append(Text(""))
+
+        # right_col[i] maps to table row i
+        right_col = [spk_header, spk_divider] + spk_rows
+
+        def _r(i: int) -> Text:
+            return right_col[i] if i < len(right_col) else Text("")
+
+        # ── 3-column table: label | value | speakers ──────────────────────
         table = Table(show_header=False, box=None, padding=(0, 2))
         table.add_column("key", style="bold", width=12)
-        table.add_column("value")
+        table.add_column("value", width=44)
+        table.add_column("right", width=30, no_wrap=True)
 
-        # Mode
         if self.engine.passthrough_mode:
             mode_text = Text("PASSTHROUGH", style="bold green")
         else:
             mode_text = Text("ISOLATION", style="bold red")
-        table.add_row("Mode", mode_text)
 
-        # Speaker
-        speaker_text = self.current_speaker or "(none enrolled)"
-        table.add_row("Speaker", speaker_text)
-
-        # Level meter
         with self.engine.input_level_lock:
             level = self.engine.recent_input_level
         level_db = 20 * np.log10(level + 1e-10)
-        bars = int(max(0, min(30, (level_db + 60) / 2)))
-        meter = f"[{'#' * bars}{'.' * (30 - bars)}] {level_db:5.1f} dB"
-        table.add_row("Level", meter)
+        bars = int(max(0, min(28, (level_db + 60) * 28 / 60)))
+        meter = f"[{'█' * bars}{'░' * (28 - bars)}] {level_db:5.1f} dB"
 
-        table.add_row("", "")
-
-        # Stats
         if self.engine.processing_times:
             recent = self.engine.processing_times[-100:]
             recent_ms = np.array(recent) * 1000
@@ -122,49 +145,54 @@ class DemoApp:
             avg = np.mean(recent_ms)
             rtf = avg / chunk_ms
             p95 = np.percentile(recent_ms, 95)
-
-            table.add_row("RTF", f"{rtf:.3f}")
-            table.add_row("Latency", f"{avg:.1f}ms avg")
-            table.add_row("Chunks", f"{self.engine.chunks_processed:,}")
-            table.add_row("p95", f"{p95:.1f}ms")
-            drops = f"{self.engine.drops_input}/{self.engine.drops_output}"
-            table.add_row("Drops", drops)
-            table.add_row("Underruns", str(self.engine.underruns))
+            stats = [
+                ("RTF",      f"{rtf:.3f}"),
+                ("Latency",  f"{avg:.1f}ms avg"),
+                ("Chunks",   f"{self.engine.chunks_processed:,}"),
+                ("p95",      f"{p95:.1f}ms"),
+                ("Drops",    f"{self.engine.drops_input}/{self.engine.drops_output}"),
+                ("Underruns",str(self.engine.underruns)),
+            ]
         else:
-            table.add_row("RTF", "—")
-            table.add_row("Latency", "—")
-            table.add_row("Chunks", "0")
-            table.add_row("p95", "—")
-            table.add_row("Drops", "0/0")
-            table.add_row("Underruns", "0")
+            stats = [
+                ("RTF",      "—"), ("Latency",  "—"), ("Chunks",   "0"),
+                ("p95",      "—"), ("Drops",    "0/0"), ("Underruns","0"),
+            ]
 
-        table.add_row("", "")
+        controls = Text()
+        for key, label, key_style in [
+            ("[T]", " Toggle  ", "bold bright_cyan"),
+            ("[E]", " Enroll  ", "bold bright_cyan"),
+            ("[N]", " Name  ", "bold bright_cyan"),
+            ("[Q]", " Quit",    "bold red"),
+        ]:
+            controls.append(key, style=key_style)
+            controls.append(label)
 
-        # Controls
-        controls = Text("[T] Toggle   [E] Enroll   [S] Select   [N] Name   [Q] Quit", style="dim")
-        table.add_row("", controls)
-
-        table.add_row("", "")
-
-        # Status / enrollment countdown / selection list
         if self.naming:
             status_text = Text(f"Enter name: {self._name_input_buffer}_", style="bold yellow")
         elif self.enrolling and self.enroll_start_time is not None:
             elapsed = time.time() - self.enroll_start_time
             remaining = max(0, ENROLLMENT_DURATION - elapsed)
             status_text = Text(f"Enrolling... speak now ({remaining:.0f}s remaining)", style="bold yellow")
-        elif self.selecting and self._speaker_list:
-            lines = ["Select a speaker:"]
-            for i, spk in enumerate(self._speaker_list[:9], 1):
-                lines.append(f"  [{i}] {spk.name}")
-            lines.append("  [Esc] Cancel")
-            status_text = Text("\n".join(lines), style="cyan")
         else:
             status_text = Text(f"Status: {self.status_message}")
 
-        table.add_row("", status_text)
+        # Row layout (right column index in parens)
+        table.add_row("Mode",    mode_text,                              _r(0))
+        table.add_row("Speaker", self.current_speaker or "(none enrolled)", _r(1))
+        table.add_row("Level",   meter,                                  _r(2))
+        table.add_row("",        "",                                     _r(3))
+        for row_i, (lbl, val) in enumerate(stats):
+            table.add_row(lbl, val, _r(4 + row_i))
+        table.add_row("",        "",       _r(10))
+        table.add_row("",        controls, _r(11))
+        table.add_row("",        "",       _r(12) if len(right_col) > 12 else Text(""))
+        table.add_row("",        status_text, Text(""))
 
-        return Panel(table, title="HearPoint Real-Time Demo", border_style="blue", width=55)
+        title = Text(" HearPoint AI ", style="bold bright_cyan reverse")
+        panel = Panel(table, title=title, border_style="bright_cyan", width=100)
+        return Group(Text(_BANNER, style="bold bright_cyan", no_wrap=True), panel)
 
     def _handle_key(self, ch: str) -> None:
         if self.enrolling:
@@ -190,18 +218,15 @@ class DemoApp:
                 self._name_input_buffer += ch
             return
 
-        if self.selecting:
-            if ch == "\x1b":  # Escape
-                self.selecting = False
-                self.status_message = "Selection cancelled"
-            elif ch.isdigit() and 1 <= int(ch) <= len(self._speaker_list):
-                idx = int(ch) - 1
+        # Number keys directly select a speaker
+        if ch.isdigit() and ch != "0":
+            idx = int(ch) - 1
+            if idx < len(self._speaker_list):
                 spk = self._speaker_list[idx]
                 emb = np.load(spk.embedding_path)
                 self.engine.set_embedding(emb)
                 self.engine.set_passthrough(False)
                 self.current_speaker = spk.name
-                self.selecting = False
                 self.status_message = f"Selected: {spk.name}. Isolation active."
             return
 
@@ -211,8 +236,6 @@ class DemoApp:
             self._toggle_mode()
         elif ch in ("e", "E"):
             self._start_enrollment()
-        elif ch in ("s", "S"):
-            self._start_selection()
         elif ch in ("n", "N"):
             self.naming = True
             self._name_input_buffer = ""
@@ -296,31 +319,32 @@ class DemoApp:
 
                 self.current_speaker = name
                 self.status_message = f"Enrolled: {name}. Isolation active."
+                self._speaker_list = self._load_speakers()
             except Exception as e:
                 self.status_message = f"Enrollment error: {e}"
 
         threading.Thread(target=_enrollment_worker, daemon=True).start()
 
-    def _start_selection(self) -> None:
-        self._speaker_list = self._load_speakers()
-        if not self._speaker_list:
-            self.status_message = "No enrolled speakers. Press [E] to enroll."
-            return
-        self.selecting = True
-
     def _keypress_thread(self) -> None:
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         try:
-            # cbreak mode: disables line buffering + echo for single-char reads,
-            # but keeps OPOST enabled so Rich's ANSI output works correctly.
             tty.setcbreak(fd)
+            cbreak_attrs = termios.tcgetattr(fd)
             while self.running:
+                # Re-apply cbreak if something (e.g. a spawned child process)
+                # reset the terminal to cooked mode.
+                if termios.tcgetattr(fd) != cbreak_attrs:
+                    tty.setcbreak(fd)
+                    cbreak_attrs = termios.tcgetattr(fd)
                 rlist, _, _ = select.select([fd], [], [], 0.1)
                 if rlist:
-                    ch = sys.stdin.read(1)
+                    ch = os.read(fd, 1).decode("utf-8", errors="ignore")
                     if ch:
-                        self._handle_key(ch)
+                        try:
+                            self._handle_key(ch)
+                        except Exception:
+                            pass
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
@@ -333,7 +357,7 @@ class DemoApp:
             key_thread = threading.Thread(target=self._keypress_thread, daemon=True)
             key_thread.start()
 
-            with Live(self._render(), refresh_per_second=5, console=console) as live:
+            with Live(self._render(), refresh_per_second=5, console=console, screen=True) as live:
                 while self.running:
                     time.sleep(0.2)
                     live.update(self._render())
@@ -343,6 +367,22 @@ class DemoApp:
             self.running = False
             self.engine.stop()
             self._embedding_executor.shutdown(wait=False)
+
+
+_BANNER = r"""
+ __    __                                                    __             __                   __ 
+|  \  |  \                                                  |  \           |  \                 |  \
+| $$  | $$  ______    ______    ______    ______    ______   \$$ _______  _| $$_        ______   \$$
+| $$__| $$ /      \  |      \  /      \  /      \  /      \ |  \|       \|   $$ \      |      \ |  \
+| $$    $$|  $$$$$$\  \$$$$$$\|  $$$$$$\|  $$$$$$\|  $$$$$$\| $$| $$$$$$$\\$$$$$$       \$$$$$$\| $$
+| $$$$$$$$| $$    $$ /      $$| $$   \$$| $$  | $$| $$  | $$| $$| $$  | $$ | $$ __     /      $$| $$
+| $$  | $$| $$$$$$$$|  $$$$$$$| $$      | $$__/ $$| $$__/ $$| $$| $$  | $$ | $$|  \ __|  $$$$$$$| $$
+| $$  | $$ \$$     \ \$$    $$| $$      | $$    $$ \$$    $$| $$| $$  | $$  \$$  $$|  \\$$    $$| $$
+ \$$   \$$  \$$$$$$$  \$$$$$$$ \$$      | $$$$$$$   \$$$$$$  \$$ \$$   \$$   \$$$$  \$$ \$$$$$$$ \$$
+                                        | $$                                                        
+                                        | $$                                                        
+                                         \$$                                                        
+"""
 
 
 def main():
@@ -369,7 +409,12 @@ def main():
     config.debug.passthrough = True
     config.model.embedding = None
 
-    app = DemoApp(config, args.embedding_model)
+    perf_logger: PerformanceLogger | None = None
+    if config.logging.enabled:
+        perf_logger = PerformanceLogger(config.logging.log_dir)
+        perf_logger.start()
+
+    app = DemoApp(config, args.embedding_model, logger=perf_logger)
     app.run()
 
 
