@@ -1,109 +1,43 @@
-# Real-time TFGridNet Inference Configuration
+# Real-time Inference Configuration
 
-# =============================================================================
-# SPEAKER EMBEDDING
-# =============================================================================
-# Path to speaker embedding .npy file (required)
-# e.g., "/path/to/speaker_embedding.npy"
-embedding: media/enrollments/Derron_enrolment.npy
+embedding: media/si_sdr_fixture/enrollment.npy  # e.g. "/path/to/speaker.npy" — speaker enrollment file
+embedding_model: resemblyzer  # resemblyzer | tfgridnet — model used for enrollment and cosine eval
 
-# Speaker embedding model ID used for enrollment and cosine eval checks
-# Allowed: resemblyzer, tfgridnet
-embedding_model: resemblyzer
-
-# =============================================================================
-# AUDIO CONFIGURATION
-# =============================================================================
 audio:
-  # Sample rate in Hz
-  sample_rate: 16000
+  sample_rate: 16000       # e.g. 16000 — Hz
+  chunk_size: 128          # e.g. 128 — samples per processing chunk
+  input_device: null       # e.g. 1 — device index (run --list-devices); null = system default
+  output_device: null      # e.g. 2 — device index; null = system default
+  input_channels: 2        # e.g. 2 — 1 for mono mic, 2 for stereo
+  output_channels: 2       # e.g. 2 — null = auto-detect
+  buffer_size_chunks: 4    # e.g. 4 — input buffer depth; higher = more stable, more latency
+  output_gain: 3.0         # e.g. 1.0 — multiplier; 1.0 = unity, 2.0 = +6dB
 
-  # Chunk size in samples
-  chunk_size: 128
-
-  # Input device index (null for system default)
-  # Run with --list-devices to see available devices
-  input_device: null
-
-  # Output device index (null for system default)
-  output_device: null
-
-  # Number of input channels (1 for mono mic, 2 for stereo mic)
-  input_channels: 2
-
-  # Number of output channels (null for auto-detect, 1 for mono, 2 for stereo)
-  output_channels: 2
-
-  # Number of chunks to buffer for input (higher = more stable, more latency)
-  buffer_size_chunks: 4
-
-  # Output gain multiplier (1.0 = unity, 2.0 = +6dB, 0.5 = -6dB)
-  output_gain: 3.0
-
-
-# =============================================================================
-# DEBUG OPTIONS
-# =============================================================================
 debug:
-  # Enable verbose debug logging (prints input/output stats per chunk)
-  verbose: false
+  verbose: false           # e.g. true — prints input/output stats per chunk
+  passthrough: false       # e.g. true — bypasses model, passes audio through unchanged
+  save_dir: null           # e.g. "./debug_audio/" — saves debug_input.wav + debug_output.wav; null = disabled
 
-  # Bypass the model entirely - pass audio through unchanged
-  # Useful for testing audio I/O pipeline
-  passthrough: false
-
-  # Directory to save debug audio files (debug_input.wav, debug_output.wav)
-  # Set to null to disable, or a path like "./debug_audio/"
-  save_dir: null
-
-
-# =============================================================================
-# OPTIMIZATION
-# =============================================================================
 optimization:
-  # Wrap model in torch.compile(mode="reduce-overhead") for graph optimization
-  # Falls back gracefully on unsupported backends (e.g. MPS)
-  use_torch_compile: false
-
-  # Use pre-exported CoreML model (.mlpackage) for ANE-accelerated inference.
-  # Export first: python src/tools/export_coreml.py
-  # Then set use_coreml: true and point coreml_model_path at the output file.
-  use_coreml: true
+  use_torch_compile: false        # e.g. true — wraps model in torch.compile(reduce-overhead); not recommended on MPS
+  use_coreml: true                # e.g. true — use pre-exported CoreML model for ANE acceleration
   coreml_model_path: checkpoints/tfgridnet_streaming.mlpackage  # e.g. "checkpoints/tfgridnet_streaming.mlpackage"
 
-
-# =============================================================================
-# NAME DETECTION (Vosk)
-# =============================================================================
-# When enabled, a separate thread listens for a target word (e.g. a name) in the
-# same microphone stream and triggers passthrough mode
 name_detection:
-  enabled: true
-  # Path to Vosk model directory (relative to repo root or absolute)
-  model_path: src/models/vosk-model-small-en-us-0.15
-  target_word: toggle
+  enabled: true            # e.g. true — listen for target word and toggle passthrough mode
+  model_path: src/models/vosk-model-small-en-us-0.15  # e.g. "src/models/vosk-model-small-en-us-0.15" — Vosk model dir
+  target_word: toggle      # e.g. "derron" — spoken word that triggers toggle
 
-
-# =============================================================================
-# PERFORMANCE LOGGING
-# =============================================================================
-# When enabled, per-second snapshots and a session summary are written to a
-# JSONL file in log_dir. Logging uses a background thread queue and adds zero
-# latency to the audio processing path.
 logging:
-  enabled: true
-  log_dir: logs/realtime
+  enabled: true            # e.g. true — write per-second snapshots + session summary to JSONL
+  log_dir: logs/realtime   # e.g. "logs/realtime" — output directory for log files
 
-
-# =============================================================================
-# FILE-BASED TEST MODE
-# =============================================================================
 test:
-  # Enable file-based test mode (process a file instead of live audio)
-  enabled: false
-
-  # Path to input audio file
-  input_file: media/mixtures/derron_mubashir.wav
-
-  # Path to output audio file (null = auto-generated from input filename)
-  output_file: null
+  enabled: true           # e.g. true — process a file instead of live audio
+  input_file: media/si_sdr_fixture/mixture.wav        # e.g. "media/mixture.wav" — input audio file
+  output_dir: reports/eval/output_audio  # e.g. "reports/eval/output_audio" — directory for enhanced output WAV
+  reference_file: media/si_sdr_fixture/reference.wav  # e.g. "media/reference.wav" — clean ref for SI-SDR; null = skip
+  report_dir: reports/eval # e.g. "reports/eval" — timestamped JSON eval reports; null = disabled
+  threshold_profile: dev   # e.g. "dev" — profile from thresholds.yaml to check against; null = skip
+  warmup_chunks: 10        # e.g. 10 — chunks excluded from metric aggregation
+  generate_plots: true     # e.g. true — generate spectrogram, RTF distribution, SI-SDRi vs SNR plots (Requires embedding path to be si_sdr_fixture)

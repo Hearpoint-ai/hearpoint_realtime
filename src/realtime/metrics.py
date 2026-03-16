@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -88,18 +89,26 @@ def _ensure_stereo(audio: np.ndarray) -> np.ndarray:
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     a, b = a.flatten().astype(np.float64), b.flatten().astype(np.float64)
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
 
 
 def _si_sdr(reference: np.ndarray, estimate: np.ndarray) -> float:
     """SI-SDR in dB for a single channel [N]."""
     ref = reference.astype(np.float64) - reference.mean()
     est = estimate.astype(np.float64) - estimate.mean()
-    alpha = np.dot(est, ref) / (np.dot(ref, ref) + 1e-8)
-    target = alpha * ref
-    noise = est - target
-    target_pow = np.dot(target, target)
-    noise_pow = np.dot(noise, noise)
+    # Normalize to unit scale to avoid float64 overflow in dot products
+    ref_scale = np.linalg.norm(ref) + 1e-8
+    ref = ref / ref_scale
+    est = est / ref_scale
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        alpha = np.dot(est, ref) / (np.dot(ref, ref) + 1e-8)
+        target = alpha * ref
+        noise = est - target
+        target_pow = np.dot(target, target)
+        noise_pow = np.dot(noise, noise)
     # Add 1e-10 offset after ratio so that zero-estimate → -100 dB, not 0 dB
     return float(10 * np.log10(target_pow / (noise_pow + 1e-8) + 1e-10))
 

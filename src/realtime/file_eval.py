@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import socket
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import resampy
@@ -16,7 +18,18 @@ from src.models.tfgridnet_realtime.net import Net
 from src.utils import get_torch_device
 
 from .config import Config, _normalize_embedding_model_id
+from .coreml_support import CoreMLModel
 from .metrics import _cosine_similarity, _ensure_stereo, _si_sdr_stereo
+
+
+@dataclass
+class PlotData:
+    chunk_times_s: np.ndarray        # per-chunk processing times (seconds)
+    chunk_duration_s: float          # chunk_size / sample_rate
+    mixture: np.ndarray              # shape [N, 2] post-warmup mixture audio
+    output: np.ndarray               # shape [N, 2] post-warmup model output
+    reference: Optional[np.ndarray]  # shape [N, 2] or None
+    sample_rate: int
 
 
 class FileBasedTest:
@@ -34,9 +47,14 @@ class FileBasedTest:
         self.chunk_size = config.audio.chunk_size
         self.embedding_model_id = _normalize_embedding_model_id(config.model.embedding_model)
         self.device = torch.device(config.model.device) if config.model.device else get_torch_device()
+        self._using_coreml = False  # updated by _load_model
 
         # Load model
-        self._load_model(config.get_checkpoint_path(), config.get_model_config_path())
+        self._load_model(
+            config.get_checkpoint_path(),
+            config.get_model_config_path(),
+            coreml_path=config.optimization.coreml_model_path if config.optimization.use_coreml else None,
+        )
         if config.model.embedding is None:
             raise ValueError("Speaker embedding path is required")
         self._load_embedding(config.model.embedding)
@@ -52,8 +70,19 @@ class FileBasedTest:
             except Exception as e:
                 print(f"torch.compile not available ({e}), continuing without it")
 
-    def _load_model(self, checkpoint_path: Path, config_path: Path) -> None:
-        """Load the TFGridNet model from checkpoint."""
+    def _load_model(self, checkpoint_path: Path, config_path: Path, coreml_path: Path | None = None) -> None:
+        """Load the TFGridNet model from checkpoint, or a CoreML .mlpackage if requested."""
+        # --- CoreML path ---
+        if coreml_path is not None:
+            try:
+                self.model = CoreMLModel(coreml_path)
+                self._using_coreml = True
+                return
+            except Exception as e:
+                print(f"Warning: CoreML load failed ({e}), falling back to PyTorch.")
+
+        # --- PyTorch path ---
+        self._using_coreml = False
         with config_path.open() as fp:
             config = json.load(fp)
         model_params = config.get("pl_module_args", {}).get("model_params", {})
@@ -85,11 +114,12 @@ class FileBasedTest:
         output_path: Path,
         warmup_chunks: int = 10,
         reference_path: Path | None = None,
-    ) -> dict:
+        generate_plots: bool = False,
+    ) -> tuple[dict, PlotData | None]:
         """
         Process an audio file chunk-by-chunk, simulating real-time behavior.
 
-        Returns a stats dict conforming to the JSON report schema.
+        Returns a (stats, plot_data) tuple. plot_data is None when generate_plots=False.
         """
         print(f"Processing {input_path} -> {output_path}")
 
@@ -131,7 +161,7 @@ class FileBasedTest:
                 la_buffer.copy_(torch.from_numpy(la_stereo.T).unsqueeze(0))
                 la_tensor = la_buffer
 
-            with torch.inference_mode():
+            if self._using_coreml:
                 output, self.state = self.model.predict(
                     input_buffer,
                     self.embedding[:, 0],
@@ -139,6 +169,15 @@ class FileBasedTest:
                     pad=True,
                     lookahead_audio=la_tensor,
                 )
+            else:
+                with torch.inference_mode():
+                    output, self.state = self.model.predict(
+                        input_buffer,
+                        self.embedding[:, 0],
+                        self.state,
+                        pad=True,
+                        lookahead_audio=la_tensor,
+                    )
 
             out = np.clip(output.squeeze(0).cpu().numpy().T, -1.0, 1.0)
             elapsed = time.perf_counter() - t0
@@ -235,11 +274,11 @@ class FileBasedTest:
         else:
             si_sdr_in = si_sdr_out = si_sdr_i = None
 
-        return {
+        stats = {
             "mode": "file",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "host_id": socket.gethostname(),
-            "device": str(self.device),
+            "device": "coreml" if self._using_coreml else str(self.device),
             "sample_rate": self.sample_rate,
             "chunk_size": self.chunk_size,
             "stft_pad_size_samples": stft_pad_size,
@@ -265,3 +304,23 @@ class FileBasedTest:
             "si_sdr_output": si_sdr_out,
             "si_sdr_improvement": si_sdr_i,
         }
+
+        plot_data: PlotData | None = None
+        if generate_plots and post_warmup_inputs:
+            ref_for_plot: np.ndarray | None = None
+            if reference_path is not None:
+                ref_audio_plot, ref_sr_plot = sf.read(str(reference_path), always_2d=True)
+                if ref_sr_plot != self.sample_rate:
+                    ref_audio_plot = resampy.resample(ref_audio_plot.T, ref_sr_plot, self.sample_rate).T
+                ref_audio_plot = _ensure_stereo(ref_audio_plot)
+                ref_for_plot = ref_audio_plot[actual_warmup * self.chunk_size : num_chunks * self.chunk_size]
+            plot_data = PlotData(
+                chunk_times_s=np.array(post_warmup_times),
+                chunk_duration_s=self.chunk_size / self.sample_rate,
+                mixture=np.concatenate(post_warmup_inputs),
+                output=np.concatenate(post_warmup_outputs),
+                reference=ref_for_plot,
+                sample_rate=self.sample_rate,
+            )
+
+        return stats, plot_data

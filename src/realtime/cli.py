@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import multiprocessing
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import sounddevice as sd
@@ -110,33 +111,6 @@ Examples:
         help="Path to input audio file for file-based test mode",
     )
 
-    # Eval arguments
-    parser.add_argument(
-        "--report",
-        type=Path,
-        default=None,
-        help="Write JSON eval report to this path after the run",
-    )
-    parser.add_argument(
-        "--threshold-profile",
-        type=str,
-        default=None,
-        metavar="PROFILE",
-        help="Evaluate stats against this profile in thresholds.yaml (e.g. dev, target)",
-    )
-    parser.add_argument(
-        "--warmup-chunks",
-        type=int,
-        default=10,
-        metavar="N",
-        help="Exclude first N chunks from metric aggregation (default: 10)",
-    )
-    parser.add_argument(
-        "--reference-file",
-        type=Path,
-        default=None,
-        help="Clean reference audio for SI-SDR computation (optional; enables si_sdr_* metrics)",
-    )
     parser.add_argument(
         "--duration",
         type=float,
@@ -195,24 +169,31 @@ Examples:
 
     # Load threshold profile once (fail fast if misconfigured)
     profile_thresholds: dict = {}
-    if args.threshold_profile:
-        profile_thresholds = _load_threshold_profile(args.threshold_profile)
+    if config.test.threshold_profile:
+        profile_thresholds = _load_threshold_profile(config.test.threshold_profile)
 
     # Determine mode: file-based test or real-time
     if config.test.enabled:
         # File-based testing mode
         if config.test.input_file is None:
             parser.error("test input_file is required when test mode is enabled (set in config.yaml)")
-        if config.test.output_file is None:
-            config.test.output_file = SCRIPT_DIR / (config.test.input_file.stem + ".enhanced.wav")
+        ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+        output_dir = config.test.output_dir or SCRIPT_DIR
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{ts}.wav"
 
         tester = FileBasedTest(config)
-        stats = tester.process_file(
+        stats, plot_data = tester.process_file(
             config.test.input_file,
-            config.test.output_file,
-            warmup_chunks=args.warmup_chunks,
-            reference_path=args.reference_file,
+            output_path,
+            warmup_chunks=config.test.warmup_chunks,
+            reference_path=config.test.reference_file,
+            generate_plots=config.test.generate_plots,
         )
+        if config.test.generate_plots and plot_data is not None:
+            from realtime.plots import generate_plots as _generate_plots
+            plot_out = Path(config.test.report_dir or "reports/eval") / "plots"
+            _generate_plots(plot_data, stats, plot_out, ts=ts)
         mode = "file"
     else:
         # Real-time mode
@@ -222,7 +203,7 @@ Examples:
             perf_logger.start()
             print(f"Performance logging enabled: {perf_logger.log_path}")
         engine = RealtimeInference(config, logger=perf_logger)
-        engine.warmup_chunks = args.warmup_chunks
+        engine.warmup_chunks = config.test.warmup_chunks
         stats = engine.run(duration=args.duration)
         mode = "live"
 
@@ -231,8 +212,11 @@ Examples:
     if profile_thresholds:
         failed = _evaluate_thresholds(stats, profile_thresholds, mode)
 
-    if args.report:
-        _write_report(stats, args.report, failed)
+    if config.test.report_dir:
+        ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+        report_path = Path(config.test.report_dir) / f"{ts}.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_report(stats, report_path, failed)
 
     if failed:
         print(f"Exiting non-zero: {len(failed)} threshold(s) failed.")
