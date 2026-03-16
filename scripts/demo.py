@@ -44,6 +44,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from src.ml.factory import EMBEDDING_MODEL_IDS, create_embedding_model, embedding_model_class_name
 from src.models import Speaker
 from src.persistence import MediaJsonStore
+from src.realtime.file_eval import FileBasedTest
 from src.realtime.perf_logger import PerformanceLogger
 from src.realtime.realtime_inference import Config, RealtimeInference, _ensure_stereo
 
@@ -405,6 +406,29 @@ def main():
     args = parser.parse_args()
 
     config = Config.from_yaml(args.config)
+
+    if config.test.enabled:
+        # File-based test mode: no audio devices needed
+        if config.test.input_file is None:
+            parser.error("test.input_file is required when test mode is enabled (set in config.yaml)")
+        ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+        output_dir = config.test.output_dir or Path(REPO_ROOT / "reports/eval/output_audio")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{ts}.wav"
+        tester = FileBasedTest(config)
+        stats, plot_data = tester.process_file(
+            config.test.input_file,
+            output_path,
+            warmup_chunks=config.test.warmup_chunks,
+            reference_path=config.test.reference_file,
+            generate_plots=config.test.generate_plots,
+        )
+        if config.test.generate_plots and plot_data is not None:
+            from src.realtime.plots import generate_plots as _generate_plots
+            plot_out = Path(config.test.report_dir or "reports/eval") / "plots"
+            _generate_plots(plot_data, stats, plot_out, ts=ts)
+        return
+
     # Force passthrough + no embedding for demo startup
     config.debug.passthrough = True
     config.model.embedding = None

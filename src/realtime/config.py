@@ -85,7 +85,12 @@ class TestConfig:
 
     enabled: bool = False
     input_file: Path | None = None
-    output_file: Path | None = None
+    output_dir: Path | None = None
+    reference_file: Path | None = None
+    report_dir: Path | None = None
+    threshold_profile: str | None = None
+    warmup_chunks: int = 10
+    generate_plots: bool = False
 
 
 @dataclass
@@ -188,7 +193,12 @@ class Config:
             test=TestConfig(
                 enabled=test_data.get("enabled", False),
                 input_file=to_path(test_data.get("input_file")),
-                output_file=to_path(test_data.get("output_file")),
+                output_dir=to_path(test_data.get("output_dir")),
+                reference_file=to_path(test_data.get("reference_file")),
+                report_dir=to_path(test_data.get("report_dir")),
+                threshold_profile=test_data.get("threshold_profile") or None,
+                warmup_chunks=test_data.get("warmup_chunks", 10),
+                generate_plots=test_data.get("generate_plots", False),
             ),
             name_detection=NameDetectionConfig(
                 enabled=name_detection_data.get("enabled", False),

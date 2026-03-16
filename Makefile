@@ -16,23 +16,9 @@ make-fixture:
 	  --embedding-model "$(EMBEDDING_MODEL)"
 
 eval-fast:
-	mkdir -p reports/eval
 	$(PYTHON) src/realtime/realtime_inference.py \
-	  --test-file      media/si_sdr_fixture/mixture.wav \
-	  --embedding      media/si_sdr_fixture/enrollment.npy \
-	  --reference-file media/si_sdr_fixture/reference.wav \
-	  --report         reports/eval/$(shell date +%Y%m%dT%H%M%S).json \
-	  --threshold-profile dev \
-	  --warmup-chunks 10
-
-eval-live:
-	mkdir -p reports/eval
-	$(PYTHON) src/realtime/realtime_inference.py \
-	  --embedding media/enrollments/Derron_enrolment.npy \
-	  --report reports/eval/$(shell date +%Y%m%dT%H%M%S)_live.json \
-	  --threshold-profile dev \
-	  --duration 30 \
-	  --warmup-chunks 10
+	  --test-file  media/si_sdr_fixture/mixture.wav \
+	  --embedding  media/si_sdr_fixture/enrollment.npy
 
 # Enroll a user from an existing stereo WAV file.
 # Example:
