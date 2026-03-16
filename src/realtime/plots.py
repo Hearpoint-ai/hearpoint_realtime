@@ -28,7 +28,11 @@ def plot_spectrogram_comparison(plot_data: PlotData, output_dir: Path, ts: str =
     noverlap = 384
 
     def _specgram(ax: plt.Axes, audio: np.ndarray, title: str) -> None:
-        ax.specgram(audio, Fs=sr, NFFT=nfft, noverlap=noverlap, cmap="magma")
+        *_, im = ax.specgram(audio, Fs=sr, NFFT=nfft, noverlap=noverlap,
+                             cmap="magma", scale="dB")
+        vmax = im.get_clim()[1]
+        im.set_clim(vmin=vmax - 80, vmax=vmax)
+        ax.set_ylim(0, 8000)
         ax.set_title(title)
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Frequency (Hz)")
@@ -96,6 +100,16 @@ def plot_sisdri_vs_snr(plot_data: PlotData, output_dir: Path, ts: str = "") -> N
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.scatter(snr_in_vals, sisdri_vals, alpha=0.6, s=20, color="steelblue")
     ax.axhline(0, color="red", linestyle="--", linewidth=1, label="SI-SDRi = 0")
+
+    if len(snr_in_vals) >= 3:
+        xs = np.array(sorted(snr_in_vals))
+        coeffs = np.polyfit(snr_in_vals, sisdri_vals, 2)
+        ax.plot(xs, np.polyval(coeffs, xs), color="darkorange",
+                linewidth=1.5, label="Trend (poly-2)")
+
+    mean_sisdri = float(np.mean(sisdri_vals))
+    ax.axhline(mean_sisdri, color="green", linestyle="--", linewidth=1.2,
+               label=f"Mean SI-SDRi = {mean_sisdri:.2f} dB")
     ax.set_xlabel("Input SNR / SI-SDR (dB)")
     ax.set_ylabel("SI-SDRi (dB)")
     title = f"SI-SDRi vs Input SNR (1-second segments) — {ts}" if ts else "SI-SDRi vs Input SNR (1-second segments)"
@@ -120,9 +134,14 @@ def plot_rtf_distribution(plot_data: PlotData, stats: dict, output_dir: Path, ts
     p99 = float(np.percentile(rtf_vals, 99))
     mean_rtf = float(np.mean(rtf_vals))
 
+    pct_over = float(np.mean(rtf_vals > 1.0) * 100)
+
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hist(rtf_vals, bins=30, color="steelblue", edgecolor="white", alpha=0.85)
-    ax.axvline(1.0, color="red", linewidth=1.5, label="RTF = 1.0 (real-time limit)")
+    ax.axvline(1.0, color="red", linewidth=2.0,
+               label=f"RTF = 1.0 limit  ({pct_over:.1f}% over)")
+    ax.axvspan(1.0, float(rtf_vals.max()) * 1.05, color="red", alpha=0.12,
+               label="_nolegend_")
     ax.axvline(mean_rtf, color="orange", linestyle="--", linewidth=1.5, label=f"Mean = {mean_rtf:.3f}")
     ax.axvline(p50, color="green", linestyle=":", linewidth=1.2, label=f"p50 = {p50:.3f}")
     ax.axvline(p95, color="purple", linestyle=":", linewidth=1.2, label=f"p95 = {p95:.3f}")
