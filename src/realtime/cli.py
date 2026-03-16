@@ -191,7 +191,7 @@ Examples:
             generate_plots=config.test.generate_plots,
         )
         if config.test.generate_plots and plot_data is not None:
-            from realtime.plots import generate_plots as _generate_plots
+            from .plots import generate_plots as _generate_plots
             plot_out = Path(config.test.report_dir or "reports/eval") / "plots"
             _generate_plots(plot_data, stats, plot_out, ts=ts)
         mode = "file"
