@@ -31,6 +31,18 @@ name_detection:
 enrollment:
   use_beamformer: false     # e.g. true — beamform binaural audio before embedding (beamformer_resemblyzer); false = plain resemblyzer
 
+spectral_subtraction:
+  enabled: true            # e.g. true — magnitude spectral subtraction on isolation output
+  noise_wav: null            # e.g. media/noise_only.wav — noise-only clip (mixed to mono, resampled)
+  noise_profile_npy: null     # e.g. media/noise_mag.npy — precomputed mean |STFT| (.npy + optional .meta.json)
+  n_fft: 512
+  hop_length: 128
+  win_length: 512
+  alpha: 1.0                  # over-subtraction (>1 stronger; may add musical noise)
+  beta: 0.0                   # spectral floor vs noise spectrum (reduces warble; leaves more hiss)
+  apply_in_passthrough: false # if true, also run in passthrough mode
+  reset_on_start: true        # reset OLA state with model buffers / each file run
+
 logging:
   enabled: true            # e.g. true — write per-second snapshots + session summary to JSONL
   log_dir: logs/realtime   # e.g. "logs/realtime" — output directory for log files

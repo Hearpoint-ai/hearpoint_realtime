@@ -478,9 +478,40 @@ def main():
         default=REPO_ROOT / "src" / "realtime" / "config.yaml",
         help="Path to config YAML",
     )
+    parser.add_argument(
+        "--spectral-subtraction",
+        action="store_true",
+        help="Enable spectral subtraction (needs noise_wav or noise_profile_npy in config, or --noise-profile)",
+    )
+    parser.add_argument(
+        "--no-spectral-subtraction",
+        action="store_true",
+        help="Disable spectral subtraction even if enabled in config",
+    )
+    parser.add_argument(
+        "--noise-profile",
+        type=Path,
+        default=None,
+        help="Noise-only WAV or precomputed .npy mean-magnitude profile (enables spectral subtraction)",
+    )
     args = parser.parse_args()
 
     config = Config.from_yaml(args.config)
+
+    if args.noise_profile is not None:
+        np_path = args.noise_profile if args.noise_profile.is_absolute() else REPO_ROOT / args.noise_profile
+        config.spectral_subtraction.enabled = True
+        if np_path.suffix.lower() == ".npy":
+            config.spectral_subtraction.noise_profile_npy = np_path
+            config.spectral_subtraction.noise_wav = None
+        else:
+            config.spectral_subtraction.noise_wav = np_path
+            config.spectral_subtraction.noise_profile_npy = None
+
+    if args.no_spectral_subtraction:
+        config.spectral_subtraction.enabled = False
+    elif args.spectral_subtraction:
+        config.spectral_subtraction.enabled = True
     embedding_model_id = args.embedding_model or (
         "beamformer_resemblyzer" if config.enrollment.use_beamformer else "resemblyzer"
     )

@@ -23,6 +23,7 @@ from src.utils import get_torch_device
 from .config import Config, TRANSPARENCY_SOUND_PATH
 from .coreml_support import CoreMLModel
 from .metrics import _ensure_stereo
+from .spectral_subtraction import apply_streaming_subtractor, build_streaming_subtractor_from_config
 from .perf_logger import PerformanceLogger
 
 
@@ -119,6 +120,8 @@ class RealtimeInference:
         else:
             self.embedding = None
 
+        self._spectral_subtractor = build_streaming_subtractor_from_config(config)
+
         # --- Optimization: compile, pre-allocated tensors ---
         self._compiled = False
         if config.optimization.use_torch_compile:
@@ -208,6 +211,8 @@ class RealtimeInference:
         self._drain_thread_queue(self.input_queue)
         self._drain_thread_queue(self.output_queue)
         self._prefill_output_queue_with_silence()
+        if self._spectral_subtractor is not None and self.config.spectral_subtraction.reset_on_start:
+            self._spectral_subtractor.reset()
 
     def _reset_name_detection_stream(self) -> None:
         if self._name_detection_event is not None:
@@ -388,6 +393,8 @@ class RealtimeInference:
             else:
                 output_audio = audio_chunk
             output_audio = output_audio * self.output_gain
+            if self._spectral_subtractor is not None and self.config.spectral_subtraction.apply_in_passthrough:
+                output_audio = apply_streaming_subtractor(self._spectral_subtractor, output_audio)
             output_audio = np.clip(output_audio, -1.0, 1.0)
             elapsed = time.perf_counter() - start_time
             self.processing_times.append(elapsed)
@@ -447,8 +454,10 @@ class RealtimeInference:
         t_post = time.perf_counter()
         output_audio = output.squeeze(0).cpu().numpy()
         output_audio *= self.output_gain
-        output_audio = np.clip(output_audio, -1.0, 1.0)
         output_audio = output_audio.T
+        if self._spectral_subtractor is not None:
+            output_audio = apply_streaming_subtractor(self._spectral_subtractor, output_audio)
+        output_audio = np.clip(output_audio, -1.0, 1.0)
 
         if self.output_channels == 1:
             output_audio = output_audio.mean(axis=1, keepdims=True)

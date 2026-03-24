@@ -35,6 +35,7 @@ class ConfigParsingTests(unittest.TestCase):
         )
         self.assertIsNone(cfg.model.embedding)
         self.assertIsInstance(cfg.get_checkpoint_path(), Path)
+        self.assertFalse(cfg.spectral_subtraction.enabled)
 
 
 if __name__ == "__main__":

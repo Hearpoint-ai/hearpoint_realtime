@@ -20,6 +20,7 @@ from src.utils import get_torch_device
 from .config import Config, _normalize_embedding_model_id
 from .coreml_support import CoreMLModel
 from .metrics import _cosine_similarity, _ensure_stereo, _si_sdr_stereo
+from .spectral_subtraction import apply_streaming_subtractor, build_streaming_subtractor_from_config
 
 
 @dataclass
@@ -59,6 +60,7 @@ class FileBasedTest:
             raise ValueError("Speaker embedding path is required")
         self._load_embedding(config.model.embedding)
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
+        self._spectral_subtractor = build_streaming_subtractor_from_config(config)
 
         # --- Optimization: compile ---
         self._compiled = False
@@ -132,6 +134,8 @@ class FileBasedTest:
 
         # Reset state for fresh processing
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
+        if self._spectral_subtractor is not None and self.config.spectral_subtraction.reset_on_start:
+            self._spectral_subtractor.reset()
 
         num_chunks = audio.shape[0] // self.chunk_size
         stft_pad_size = self.model.stft_pad_size
@@ -179,7 +183,10 @@ class FileBasedTest:
                         lookahead_audio=la_tensor,
                     )
 
-            out = np.clip(output.squeeze(0).cpu().numpy().T, -1.0, 1.0)
+            out = output.squeeze(0).cpu().numpy().T
+            if self._spectral_subtractor is not None:
+                out = apply_streaming_subtractor(self._spectral_subtractor, out)
+            out = np.clip(out, -1.0, 1.0)
             elapsed = time.perf_counter() - t0
 
             # NaN tracking: always, from chunk 0 (NaNs during warmup are bugs too)
