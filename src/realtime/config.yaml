@@ -45,6 +45,9 @@ test:
   warmup_chunks: 10        # e.g. 10 — chunks excluded from metric aggregation
   generate_plots: true     # e.g. true — generate spectrogram, RTF distribution, SI-SDRi vs SNR plots (Requires embedding path to be si_sdr_fixture)
 
+deepfilter:
+  enabled: true    # apply DeepFilterNet noise suppression after speaker extraction
+
 controller:
   1: prev_speaker            #top left
   2: esc                     #top middle

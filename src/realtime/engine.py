@@ -17,6 +17,28 @@ import sounddevice as sd
 import soundfile as sf
 import torch
 
+try:
+    import sys as _sys
+    import types as _types
+    import torchaudio as _torchaudio
+    if not hasattr(_torchaudio, "backend"):
+        _backend = _types.ModuleType("torchaudio.backend")
+        _backend.__path__ = []  # mark as package so submodule imports work
+        _backend.common = _types.ModuleType("torchaudio.backend.common")
+        class _AudioMetaData:
+            def __init__(self, *a, **kw): pass
+        _backend.common.AudioMetaData = _AudioMetaData
+        _sys.modules["torchaudio.backend"] = _backend
+        _sys.modules["torchaudio.backend.common"] = _backend.common
+        _torchaudio.backend = _backend
+    from df.enhance import enhance as _df_enhance
+    from df.enhance import init_df as _df_init
+    _DF_AVAILABLE = True
+    _DF_IMPORT_ERROR = None
+except Exception as _e:
+    _DF_AVAILABLE = False
+    _DF_IMPORT_ERROR = _e
+
 from src.models.tfgridnet_realtime.net import Net
 from src.utils import get_torch_device
 
@@ -103,6 +125,15 @@ class RealtimeInference:
         self.device = torch.device(config.model.device) if config.model.device else get_torch_device()
 
         self._using_coreml = False  # updated by _load_model
+
+        # DeepFilterNet post-processing
+        self._deepfilter_enabled = False
+        if config.deepfilter.enabled:
+            if _DF_AVAILABLE:
+                self._df_model, self._df_state, _ = _df_init()
+                self._deepfilter_enabled = True
+            else:
+                print(f"Warning: DeepFilterNet unavailable, skipping post-processing ({_DF_IMPORT_ERROR})")
 
         # Always load model (needed for toggling passthrough→isolation at runtime)
         self._load_model(
@@ -446,6 +477,14 @@ class RealtimeInference:
         # --- Post: tensor -> numpy ---
         t_post = time.perf_counter()
         output_audio = output.squeeze(0).cpu().numpy()
+
+        # DeepFilterNet noise suppression (shape: [channels, chunk_size])
+        if self._deepfilter_enabled:
+            df_sr = self._df_state.sr()
+            audio_48k = resampy.resample(output_audio, self.sample_rate, df_sr)
+            enhanced_48k = _df_enhance(self._df_model, self._df_state, torch.from_numpy(audio_48k))
+            output_audio = resampy.resample(enhanced_48k.numpy(), df_sr, self.sample_rate)
+
         output_audio *= self.output_gain
         output_audio = np.clip(output_audio, -1.0, 1.0)
         output_audio = output_audio.T

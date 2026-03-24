@@ -125,6 +125,13 @@ class EnrollmentConfig:
 
 
 @dataclass
+class DeepFilterConfig:
+    """DeepFilterNet post-processing configuration."""
+
+    enabled: bool = False
+
+
+@dataclass
 class Config:
     """Complete configuration for real-time inference."""
 
@@ -137,6 +144,7 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     enrollment: EnrollmentConfig = field(default_factory=EnrollmentConfig)
+    deepfilter: DeepFilterConfig = field(default_factory=DeepFilterConfig)
 
     @classmethod
     def from_yaml(cls, yaml_path: Path | str) -> "Config":
@@ -170,6 +178,7 @@ class Config:
         logging_data = data.get("logging", {}) or {}
         controller_raw = data.get("controller", {}) or {}
         enrollment_data = data.get("enrollment", {}) or {}
+        df_data = data.get("deepfilter", {}) or {}
 
         # Load embedding settings from top-level config
         embedding_path = to_path(data.get("embedding"))
@@ -232,6 +241,9 @@ class Config:
             ),
             enrollment=EnrollmentConfig(
                 use_beamformer=enrollment_data.get("use_beamformer", True),
+            ),
+            deepfilter=DeepFilterConfig(
+                enabled=df_data.get("enabled", False),
             ),
         )
 
