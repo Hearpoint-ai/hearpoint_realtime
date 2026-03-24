@@ -20,10 +20,17 @@ import torch
 from src.models.tfgridnet_realtime.net import Net
 from src.utils import get_torch_device
 
-from .config import Config, TRANSPARENCY_SOUND_PATH
+from .config import REPO_ROOT, Config, TRANSPARENCY_SOUND_PATH
 from .coreml_support import CoreMLModel
 from .metrics import _ensure_stereo
-from .spectral_subtraction import apply_streaming_subtractor, build_streaming_subtractor_from_config
+from .spectral_subtraction import (
+    NoiseProfileMeta,
+    apply_streaming_subtractor,
+    build_streaming_subtractor_from_config,
+    build_streaming_subtractor_from_magnitude,
+    estimate_noise_magnitude_spectrum,
+    save_noise_profile,
+)
 from .perf_logger import PerformanceLogger
 
 
@@ -169,6 +176,21 @@ class RealtimeInference:
         self._total_post_warmup_samples = 0
         self._clipped_post_warmup = 0
 
+        # Live noise-profile capture (isolation output, before spectral subtraction)
+        self._noise_capture_target_samples = 0
+        self._noise_capture_chunks: list[np.ndarray] = []
+        self._noise_capture_collected = 0
+        self.noise_capture_last_message: str | None = None
+
+    @property
+    def noise_capture_active(self) -> bool:
+        return self._noise_capture_target_samples > 0
+
+    def _cancel_noise_capture(self) -> None:
+        self._noise_capture_target_samples = 0
+        self._noise_capture_chunks = []
+        self._noise_capture_collected = 0
+
     def _make_embedding_tensor(self, embedding_np: np.ndarray) -> torch.Tensor:
         emb = embedding_np.astype(np.float32).reshape(1, 1, -1)
         return torch.from_numpy(emb).to(self.device)
@@ -213,6 +235,7 @@ class RealtimeInference:
         self._prefill_output_queue_with_silence()
         if self._spectral_subtractor is not None and self.config.spectral_subtraction.reset_on_start:
             self._spectral_subtractor.reset()
+        self._cancel_noise_capture()
 
     def _reset_name_detection_stream(self) -> None:
         if self._name_detection_event is not None:
@@ -231,6 +254,10 @@ class RealtimeInference:
             self.output_gain = float(command.payload)
             return
 
+        if command.kind == "start_noise_capture":
+            self._begin_noise_capture(float(command.payload))
+            return
+
         if command.kind == "set_embedding":
             self.embedding = self._make_embedding_tensor(command.payload)
             self._reset_runtime_context()
@@ -238,6 +265,8 @@ class RealtimeInference:
 
         if command.kind != "set_passthrough":
             raise ValueError(f"Unknown control command: {command.kind}")
+
+        self._cancel_noise_capture()
 
         enabled = bool(command.payload)
         changed = enabled != self.passthrough_mode
@@ -455,6 +484,8 @@ class RealtimeInference:
         output_audio = output.squeeze(0).cpu().numpy()
         output_audio *= self.output_gain
         output_audio = output_audio.T
+        if self._noise_capture_target_samples > 0:
+            self._append_noise_capture(output_audio)
         if self._spectral_subtractor is not None:
             output_audio = apply_streaming_subtractor(self._spectral_subtractor, output_audio)
         output_audio = np.clip(output_audio, -1.0, 1.0)
@@ -520,6 +551,88 @@ class RealtimeInference:
         """Swap speaker embedding at runtime through the processing thread."""
         embedding_copy = np.array(embedding_np, copy=True)
         self._submit_control_command(ControlCommand(kind="set_embedding", payload=embedding_copy))
+
+    def start_noise_profile_capture(self, duration_s: float | None = None) -> None:
+        """Record *duration_s* of separated output (after gain, before denoise) for noise STFT profile."""
+        ss = self.config.spectral_subtraction
+        d = float(duration_s if duration_s is not None else ss.capture_duration_s)
+        self._submit_control_command(ControlCommand(kind="start_noise_capture", payload=d))
+
+    def _begin_noise_capture(self, duration_s: float) -> None:
+        self.noise_capture_last_message = None
+        if self.passthrough_mode or self.embedding is None:
+            self.noise_capture_last_message = "Noise capture needs isolation mode and an enrolled speaker"
+            return
+        if duration_s <= 0:
+            self.noise_capture_last_message = "Invalid capture duration"
+            return
+        self._cancel_noise_capture()
+        self._noise_capture_target_samples = int(duration_s * self.sample_rate)
+        self._noise_capture_chunks = []
+        self._noise_capture_collected = 0
+
+    def _append_noise_capture(self, chunk: np.ndarray) -> None:
+        need = self._noise_capture_target_samples - self._noise_capture_collected
+        if need <= 0:
+            return
+        take = min(int(chunk.shape[0]), need)
+        self._noise_capture_chunks.append(chunk[:take].copy())
+        self._noise_capture_collected += take
+        if self._noise_capture_collected >= self._noise_capture_target_samples:
+            self._finalize_noise_capture()
+
+    def _finalize_noise_capture(self) -> None:
+        self._noise_capture_target_samples = 0
+        try:
+            audio = np.concatenate(self._noise_capture_chunks, axis=0)
+        except Exception as e:
+            self.noise_capture_last_message = f"Noise capture failed: {e}"
+            self._noise_capture_chunks = []
+            self._noise_capture_collected = 0
+            return
+        self._noise_capture_chunks = []
+        self._noise_capture_collected = 0
+
+        ss = self.config.spectral_subtraction
+        mono = np.mean(audio, axis=1)
+        try:
+            mag = estimate_noise_magnitude_spectrum(
+                mono.astype(np.float64),
+                self.sample_rate,
+                ss.n_fft,
+                ss.hop_length,
+                ss.win_length,
+            )
+        except Exception as e:
+            self.noise_capture_last_message = f"Noise profile estimate failed: {e}"
+            return
+
+        cap_dir = ss.capture_output_dir or (REPO_ROOT / "media" / "noise_captures")
+        cap_dir = Path(cap_dir)
+        cap_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+        wav_path = cap_dir / f"noise_capture_{ts}.wav"
+        npy_path = cap_dir / f"noise_capture_{ts}_mag.npy"
+        try:
+            sf.write(str(wav_path), audio.astype(np.float32), self.sample_rate)
+            meta = NoiseProfileMeta(
+                sample_rate=self.sample_rate,
+                n_fft=ss.n_fft,
+                hop_length=ss.hop_length,
+                win_length=ss.win_length,
+            )
+            save_noise_profile(npy_path, mag, meta)
+        except Exception as e:
+            self.noise_capture_last_message = f"Noise capture save failed: {e}"
+            return
+
+        self._spectral_subtractor = build_streaming_subtractor_from_magnitude(self.config, mag)
+        self.config.spectral_subtraction.enabled = True
+        self.config.spectral_subtraction.noise_wav = wav_path
+        self.config.spectral_subtraction.noise_profile_npy = npy_path
+        self.noise_capture_last_message = (
+            f"Noise profile captured ({wav_path.name}). Spectral subtraction enabled."
+        )
 
     def start_enrollment_capture(self, duration_s: float) -> None:
         """Begin accumulating input audio for enrollment."""

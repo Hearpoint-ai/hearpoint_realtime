@@ -138,6 +138,8 @@ class SpectralSubtractionConfig:
     beta: float = 0.0
     apply_in_passthrough: bool = False
     reset_on_start: bool = True
+    capture_duration_s: float = 3.0
+    capture_output_dir: Path | None = None
 
 
 @dataclass
@@ -262,6 +264,8 @@ class Config:
                 beta=float(ss_data.get("beta", 0.0)),
                 apply_in_passthrough=ss_data.get("apply_in_passthrough", False),
                 reset_on_start=ss_data.get("reset_on_start", True),
+                capture_duration_s=float(ss_data.get("capture_duration_s", 3.0)),
+                capture_output_dir=to_path(ss_data.get("capture_output_dir")),
             ),
         )
 

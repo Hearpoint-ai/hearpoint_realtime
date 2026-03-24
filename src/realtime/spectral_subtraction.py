@@ -332,6 +332,21 @@ def build_streaming_subtractor_from_config(
     )
 
 
+def build_streaming_subtractor_from_magnitude(config: Any, magnitude: np.ndarray) -> StreamingSpectralSubtractor:
+    """Build subtractor from a precomputed mean |STFT| vector (same STFT params as config)."""
+    ss = config.spectral_subtraction
+    sr = config.audio.sample_rate
+    return StreamingSpectralSubtractor(
+        sr,
+        magnitude.astype(np.float64),
+        ss.n_fft,
+        ss.hop_length,
+        ss.win_length,
+        alpha=ss.alpha,
+        beta=ss.beta,
+    )
+
+
 def subtract_streaming_full_track(
     audio_mono: np.ndarray,
     subtractor_factory: Callable[[], StreamingSpectralSubtractorMono],

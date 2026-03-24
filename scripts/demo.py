@@ -7,6 +7,8 @@ Controls:
     [E] Enroll speaker (5-second capture from live mic)
     [S] Select enrolled speaker
     [Q] Quit
+    [0] Capture noise profile — in isolation, stay quiet for a few seconds; builds spectral-subtraction profile from separated output.
+
 """
 
 import argparse
@@ -96,6 +98,7 @@ class DemoApp:
         self._name_input_buffer = ""
         self.status_message = "Ready"
         self.running = False
+        self._noise_capture_t0: float | None = None
 
     def _load_speakers(self) -> list[Speaker]:
         speakers, _, _ = self.store.load()
@@ -179,6 +182,7 @@ class DemoApp:
             "toggle_passthrough": "Toggle",
             "enroll":             "Enroll",
             "name":               "Name",
+            "capture_noise_profile": "NoisePrf",
             "decrease_gain":      "Gain↓",
             "increase_gain":      "Gain↑",
             "quit":               "Quit",
@@ -213,13 +217,24 @@ class DemoApp:
                 _cells.append(Text(""))
             controls.add_row(*_cells)
 
+        msg = getattr(self.engine, "noise_capture_last_message", None)
+        if msg:
+            self.status_message = msg
+            self.engine.noise_capture_last_message = None
+
         if self.naming:
             status_text = Text(f"Enter name: {self._name_input_buffer}_", style="bold yellow")
         elif self.enrolling and self.enroll_start_time is not None:
             elapsed = time.time() - self.enroll_start_time
             remaining = max(0, ENROLLMENT_DURATION - elapsed)
             status_text = Text(f"Enrolling... speak now ({remaining:.0f}s remaining)", style="bold yellow")
+        elif getattr(self.engine, "noise_capture_active", False) and self._noise_capture_t0 is not None:
+            dur = self._config.spectral_subtraction.capture_duration_s
+            rem = max(0.0, dur - (time.time() - self._noise_capture_t0))
+            status_text = Text(f"Noise profile — stay quiet ({rem:.1f}s)...", style="bold yellow")
         else:
+            if not getattr(self.engine, "noise_capture_active", False):
+                self._noise_capture_t0 = None
             status_text = Text(f"Status: {self.status_message}")
 
         # Row layout (right column index in parens)
@@ -297,6 +312,16 @@ class DemoApp:
             new_gain = min(10.0, self.engine.output_gain + 0.5)
             self.engine.set_output_gain(new_gain)
             self.status_message = f"Gain: {new_gain:.1f}x"
+        elif command == "capture_noise_profile":
+            if self.engine.embedding is None:
+                self.status_message = "Enroll or select a speaker first"
+                return
+            if self.engine.passthrough_mode:
+                self.status_message = "Switch to isolation mode first (toggle passthrough)"
+                return
+            self.engine.start_noise_profile_capture(self._config.spectral_subtraction.capture_duration_s)
+            self._noise_capture_t0 = time.time()
+            self.status_message = "Noise capture starting — stay quiet"
 
     def _nav_speaker(self, delta: int) -> None:
         if not self._speaker_list:
