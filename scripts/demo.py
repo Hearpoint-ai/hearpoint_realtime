@@ -85,6 +85,9 @@ class DemoApp:
             mp_context=multiprocessing.get_context("spawn"),
         )
 
+        self._config = config
+        self._focused_idx: int = 0
+
         self.current_speaker: str | None = None
         self.enrolling = False
         self.enroll_start_time: float | None = None
@@ -104,11 +107,20 @@ class DemoApp:
         spk_divider = Text("─" * 22, style="dim")
         if self._speaker_list:
             spk_rows = []
+            focused = self._focused_idx % len(self._speaker_list)
             for i, spk in enumerate(self._speaker_list[:9], 1):
-                if spk.name == self.current_speaker:
-                    spk_rows.append(Text(f"▶ [{i}] {spk.name}", style="bold cyan"))
+                is_active = spk.name == self.current_speaker
+                is_focused = (i - 1) == focused
+                if is_active:
+                    prefix = "▶"
+                    style = "bold cyan"
+                elif is_focused:
+                    prefix = "→"
+                    style = "bold white"
                 else:
-                    spk_rows.append(Text(f"  [{i}] {spk.name}", style="cyan"))
+                    prefix = " "
+                    style = "cyan"
+                spk_rows.append(Text(f"{prefix} [{i}] {spk.name}", style=style))
         else:
             spk_rows = [Text("(none — press E to enroll)", style="dim")]
 
@@ -160,15 +172,46 @@ class DemoApp:
                 ("p95",      "—"), ("Drops",    "0/0"), ("Underruns","0"),
             ]
 
-        controls = Text()
-        for key, label, key_style in [
-            ("[T]", " Toggle  ", "bold bright_cyan"),
-            ("[E]", " Enroll  ", "bold bright_cyan"),
-            ("[N]", " Name  ", "bold bright_cyan"),
-            ("[Q]", " Quit",    "bold red"),
-        ]:
-            controls.append(key, style=key_style)
-            controls.append(label)
+        _command_labels = {
+            "next_speaker":       "Next Spk",
+            "prev_speaker":       "Prev Spk",
+            "select":             "Select",
+            "toggle_passthrough": "Toggle",
+            "enroll":             "Enroll",
+            "name":               "Name",
+            "decrease_gain":      "Gain↓",
+            "increase_gain":      "Gain↑",
+            "quit":               "Quit",
+            "esc":                "Quit",
+        }
+        _cmd_to_keys: dict[str, list[str]] = {}
+        for _k, _cmd in self._config.controller.bindings.items():
+            _cmd_to_keys.setdefault(_cmd, []).append(_k)
+
+        _ctrl_entries: list[tuple[str, str, bool]] = []
+        for _cmd, _label in _command_labels.items():
+            _keys = _cmd_to_keys.get(_cmd, [])
+            if not _keys:
+                continue
+            _ctrl_entries.append(("/".join(_keys), _label, _cmd in ("quit", "esc")))
+
+        # Lay out controls as a grid: 3 fixed-width columns per row
+        _COLS = 3
+        _COL_W = 14
+        controls = Table(show_header=False, box=None, padding=(0, 0))
+        for _ in range(_COLS):
+            controls.add_column(width=_COL_W, no_wrap=True)
+        for _i in range(0, len(_ctrl_entries), _COLS):
+            _row_items = _ctrl_entries[_i : _i + _COLS]
+            _cells = []
+            for _key_str, _label, _is_quit in _row_items:
+                _t = Text()
+                _t.append(f"[{_key_str}]", style="bold red" if _is_quit else "bold bright_cyan")
+                _t.append(f" {_label}")
+                _cells.append(_t)
+            while len(_cells) < _COLS:
+                _cells.append(Text(""))
+            controls.add_row(*_cells)
 
         if self.naming:
             status_text = Text(f"Enter name: {self._name_input_buffer}_", style="bold yellow")
@@ -183,9 +226,10 @@ class DemoApp:
         table.add_row("Mode",    mode_text,                              _r(0))
         table.add_row("Speaker", self.current_speaker or "(none enrolled)", _r(1))
         table.add_row("Level",   meter,                                  _r(2))
-        table.add_row("",        "",                                     _r(3))
+        table.add_row("Gain",    f"{self.engine.output_gain:.1f}x",     _r(3))
+        table.add_row("",        "",                                     _r(4))
         for row_i, (lbl, val) in enumerate(stats):
-            table.add_row(lbl, val, _r(4 + row_i))
+            table.add_row(lbl, val, _r(5 + row_i))
         table.add_row("",        "",       _r(10))
         table.add_row("",        controls, _r(11))
         table.add_row("",        "",       _r(12) if len(right_col) > 12 else Text(""))
@@ -219,28 +263,59 @@ class DemoApp:
                 self._name_input_buffer += ch
             return
 
-        # Number keys directly select a speaker
-        if ch.isdigit() and ch != "0":
-            idx = int(ch) - 1
-            if idx < len(self._speaker_list):
-                spk = self._speaker_list[idx]
-                emb = np.load(spk.embedding_path)
-                self.engine.set_embedding(emb)
-                self.engine.set_passthrough(False)
-                self.current_speaker = spk.name
-                self.status_message = f"Selected: {spk.name}. Isolation active."
+        # Ctrl+C always quits regardless of bindings
+        if ch == "\x03":
+            self.running = False
             return
 
-        if ch in ("q", "Q", "\x03"):  # q or Ctrl+C
+        command = self._config.controller.bindings.get(ch)
+        if command:
+            self._dispatch_command(command)
+
+    def _dispatch_command(self, command: str) -> None:
+        if command in ("quit", "esc"):
             self.running = False
-        elif ch in ("t", "T"):
+        elif command == "toggle_passthrough":
             self._toggle_mode()
-        elif ch in ("e", "E"):
+        elif command == "enroll":
             self._start_enrollment()
-        elif ch in ("n", "N"):
+        elif command == "name":
             self.naming = True
             self._name_input_buffer = ""
             self.status_message = "Type a name and press Enter"
+        elif command == "next_speaker":
+            self._nav_speaker(+1)
+        elif command == "prev_speaker":
+            self._nav_speaker(-1)
+        elif command == "select":
+            self._select_focused_speaker()
+        elif command == "decrease_gain":
+            new_gain = max(0.0, self.engine.output_gain - 0.5)
+            self.engine.set_output_gain(new_gain)
+            self.status_message = f"Gain: {new_gain:.1f}x"
+        elif command == "increase_gain":
+            new_gain = min(6.0, self.engine.output_gain + 0.5)
+            self.engine.set_output_gain(new_gain)
+            self.status_message = f"Gain: {new_gain:.1f}x"
+
+    def _nav_speaker(self, delta: int) -> None:
+        if not self._speaker_list:
+            self.status_message = "No speakers enrolled"
+            return
+        self._focused_idx = (self._focused_idx + delta) % len(self._speaker_list)
+        self.status_message = f"Focused: {self._speaker_list[self._focused_idx].name}"
+
+    def _select_focused_speaker(self) -> None:
+        if not self._speaker_list:
+            self.status_message = "No speakers enrolled"
+            return
+        self._focused_idx = self._focused_idx % len(self._speaker_list)
+        spk = self._speaker_list[self._focused_idx]
+        emb = np.load(spk.embedding_path)
+        self.engine.set_embedding(emb)
+        self.engine.set_passthrough(False)
+        self.current_speaker = spk.name
+        self.status_message = f"Selected: {spk.name}. Isolation active."
 
     def _toggle_mode(self) -> None:
         if self.engine.embedding is None:
