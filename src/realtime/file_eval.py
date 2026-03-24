@@ -19,7 +19,7 @@ from src.utils import get_torch_device
 
 from .config import Config, _normalize_embedding_model_id
 from .coreml_support import CoreMLModel
-from .denoise import SpectralGate
+from .denoise import InputNoiseGate, SpectralGate
 from .metrics import (
     _cosine_similarity,
     _ensure_stereo,
@@ -79,6 +79,18 @@ class FileBasedTest:
             gain_floor=dc.gain_floor,
             strength=dc.strength,
             enabled=dc.enabled,
+        )
+
+        # --- Input noise gate ---
+        gc = config.input_gate
+        self.input_gate = InputNoiseGate(
+            enabled=gc.enabled,
+            threshold_db=gc.threshold_db,
+            attack_ms=gc.attack_ms,
+            release_ms=gc.release_ms,
+            hold_ms=gc.hold_ms,
+            sample_rate=config.audio.sample_rate,
+            chunk_size=config.audio.chunk_size,
         )
 
         # --- Optimization: compile ---
@@ -171,6 +183,7 @@ class FileBasedTest:
             start = i * self.chunk_size
             end = start + self.chunk_size
             chunk = _ensure_stereo(audio[start:end])  # always [chunk_size, 2]
+            chunk = self.input_gate.process_chunk_stereo(chunk)
 
             t0 = time.perf_counter()
             input_buffer.copy_(torch.from_numpy(chunk.T).unsqueeze(0))
@@ -202,6 +215,7 @@ class FileBasedTest:
 
             out = output.squeeze(0).cpu().numpy().T  # [chunk_size, 2]
             out = self.denoiser.process_chunk_stereo(out)
+            out *= self.config.audio.output_gain
             out = np.clip(out, -1.0, 1.0)
             elapsed = time.perf_counter() - t0
 

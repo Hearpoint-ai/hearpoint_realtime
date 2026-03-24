@@ -22,7 +22,7 @@ from src.utils import get_torch_device
 
 from .config import Config, TRANSPARENCY_SOUND_PATH
 from .coreml_support import CoreMLModel
-from .denoise import SpectralGate
+from .denoise import InputNoiseGate, SpectralGate
 from .metrics import _ensure_stereo
 from .perf_logger import PerformanceLogger
 
@@ -81,6 +81,18 @@ class RealtimeInference:
             strength=dc.strength,
             enabled=dc.enabled,
         )
+        # Input noise gate
+        gc = config.input_gate
+        self.input_gate = InputNoiseGate(
+            enabled=gc.enabled,
+            threshold_db=gc.threshold_db,
+            attack_ms=gc.attack_ms,
+            release_ms=gc.release_ms,
+            hold_ms=gc.hold_ms,
+            sample_rate=config.audio.sample_rate,
+            chunk_size=config.audio.chunk_size,
+        )
+
         if self.save_debug_dir:
             self.save_debug_dir.mkdir(parents=True, exist_ok=True)
             self.debug_inputs = []
@@ -426,6 +438,7 @@ class RealtimeInference:
         # --- Prep: numpy -> tensor ---
         t_prep = time.perf_counter()
         audio_chunk = _ensure_stereo(audio_chunk)  # normalise to [chunk_size, 2]
+        audio_chunk = self.input_gate.process_chunk_stereo(audio_chunk)
         stereo_input = audio_chunk.T
         self._input_buffer.copy_(torch.from_numpy(stereo_input).unsqueeze(0))
 

@@ -122,6 +122,17 @@ class DenoiseConfig:
 
 
 @dataclass
+class InputGateConfig:
+    """Input noise gate configuration."""
+
+    enabled: bool = True
+    threshold_db: float = -40.0
+    attack_ms: float = 1.0
+    release_ms: float = 50.0
+    hold_ms: float = 20.0
+
+
+@dataclass
 class ControllerConfig:
     """Maps key identifiers to command names (loaded from the 'controller' YAML section)."""
 
@@ -140,6 +151,7 @@ class Config:
     name_detection: NameDetectionConfig = field(default_factory=NameDetectionConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     denoise: DenoiseConfig = field(default_factory=DenoiseConfig)
+    input_gate: InputGateConfig = field(default_factory=InputGateConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
 
     @classmethod
@@ -173,6 +185,7 @@ class Config:
         name_detection_data = data.get("name_detection", {}) or {}
         logging_data = data.get("logging", {}) or {}
         denoise_data = data.get("denoise", {}) or {}
+        input_gate_data = data.get("input_gate", {}) or {}
         controller_raw = data.get("controller", {}) or {}
 
         # Load embedding settings from top-level config
@@ -237,6 +250,13 @@ class Config:
                 noise_alpha=denoise_data.get("noise_alpha", 0.98),
                 gain_floor=denoise_data.get("gain_floor", 0.05),
                 frame_size=denoise_data.get("frame_size", 512),
+            ),
+            input_gate=InputGateConfig(
+                enabled=input_gate_data.get("enabled", True),
+                threshold_db=input_gate_data.get("threshold_db", -40.0),
+                attack_ms=input_gate_data.get("attack_ms", 1.0),
+                release_ms=input_gate_data.get("release_ms", 50.0),
+                hold_ms=input_gate_data.get("hold_ms", 20.0),
             ),
             controller=ControllerConfig(
                 bindings={str(k): str(v) for k, v in controller_raw.items()},

@@ -11,7 +11,7 @@ audio:
   input_channels: 1        # e.g. 2 — 1 for mono mic, 2 for stereo
   output_channels: 2       # e.g. 2 — null = auto-detect
   buffer_size_chunks: 4    # e.g. 4 — input buffer depth; higher = more stable, more latency
-  output_gain: 3.0         # e.g. 1.0 — multiplier; 1.0 = unity, 2.0 = +6dB
+  output_gain: 2.0         # e.g. 1.0 — multiplier; 1.0 = unity, 2.0 = +6dB
 
 debug:
   verbose: false           # e.g. true — prints input/output stats per chunk
@@ -33,11 +33,18 @@ logging:
   log_dir: logs/realtime   # e.g. "logs/realtime" — output directory for log files
 
 denoise:
-  enabled: false           # e.g. true — apply spectral-gate noise reduction to model output
-  strength: 1.0            # 0.0 = bypass, 1.0 = full denoising
-  noise_alpha: 0.98        # EMA smoothing for noise floor estimate (higher = slower adaptation)
-  gain_floor: 0.05         # minimum spectral gain (~-26dB), prevents musical noise
+  enabled: true           # e.g. true — apply spectral-gate noise reduction to model output
+  strength: 1.5            # 0.0 = bypass, 1.0 = normal, 1.5 = more aggressive suppression
+  noise_alpha: 0.95        # EMA smoothing for noise floor estimate (lower = faster adaptation)
+  gain_floor: 0.02         # minimum spectral gain (~-34dB), prevents musical noise
   frame_size: 512          # FFT frame size; must be multiple of chunk_size
+
+input_gate:
+  enabled: true            # e.g. true — gate input audio before model inference
+  threshold_db: -40.0      # RMS below this triggers attenuation (dBFS)
+  attack_ms: 1.0           # gate opens quickly for speech onsets
+  release_ms: 50.0         # gate closes slowly to avoid chop
+  hold_ms: 20.0            # keep gate open briefly after signal drops
 
 test:
   enabled: false           # e.g. true — process a file instead of live audio
