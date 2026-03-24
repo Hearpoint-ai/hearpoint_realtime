@@ -20,6 +20,10 @@ _THRESHOLD_OPS: dict[str, str] = {
     "clip_ratio": "<=",
     "cosine_similarity_delta": ">=",
     "si_sdr_improvement": ">=",
+    "spectral_flatness": "<=",
+    "hf_energy_ratio": "<=",
+    "noise_floor_db": "<=",
+    "estimated_snr_db": ">=",
 }
 
 # Excluded from threshold evaluation in file mode (always stub-zero)
@@ -116,3 +120,85 @@ def _si_sdr(reference: np.ndarray, estimate: np.ndarray) -> float:
 def _si_sdr_stereo(reference: np.ndarray, estimate: np.ndarray) -> float:
     """Mean SI-SDR across channels. Inputs: [N, 2]."""
     return float(np.mean([_si_sdr(reference[:, c], estimate[:, c]) for c in range(2)]))
+
+
+# ---------------------------------------------------------------------------
+# Noise evaluation metrics
+# ---------------------------------------------------------------------------
+
+
+def _spectral_flatness(audio_1d: np.ndarray, sr: int, frame_len: int = 512) -> float:
+    """Geometric / arithmetic mean of power spectrum (Wiener entropy).
+
+    White noise → 1.0, tonal/speech → 0.0.
+    """
+    n_frames = len(audio_1d) // frame_len
+    if n_frames == 0:
+        return 0.0
+
+    ratios: list[float] = []
+    for i in range(n_frames):
+        frame = audio_1d[i * frame_len : (i + 1) * frame_len].astype(np.float64)
+        P = np.abs(np.fft.rfft(frame)) ** 2 + 1e-12
+        geo_mean = np.exp(np.mean(np.log(P)))
+        arith_mean = np.mean(P)
+        ratios.append(geo_mean / (arith_mean + 1e-12))
+
+    return float(np.mean(ratios))
+
+
+def _hf_energy_ratio(audio_1d: np.ndarray, sr: int, cutoff_hz: int = 4000, frame_len: int = 512) -> float:
+    """Fraction of energy above *cutoff_hz*. White noise → ~0.5, speech → low."""
+    n_frames = len(audio_1d) // frame_len
+    if n_frames == 0:
+        return 0.0
+
+    n_bins = frame_len // 2 + 1
+    cutoff_bin = int(cutoff_hz * frame_len / sr)
+    cutoff_bin = min(cutoff_bin, n_bins)
+
+    total_energy = 0.0
+    hf_energy = 0.0
+    for i in range(n_frames):
+        frame = audio_1d[i * frame_len : (i + 1) * frame_len].astype(np.float64)
+        P = np.abs(np.fft.rfft(frame)) ** 2
+        total_energy += P.sum()
+        hf_energy += P[cutoff_bin:].sum()
+
+    return float(hf_energy / (total_energy + 1e-12))
+
+
+def _noise_floor_db(audio_1d: np.ndarray, sr: int, frame_len_ms: float = 32) -> float:
+    """10th percentile of frame-level RMS in dBFS. Lower = less noise."""
+    frame_len = int(sr * frame_len_ms / 1000)
+    n_frames = len(audio_1d) // frame_len
+    if n_frames == 0:
+        return -100.0
+
+    rms_vals = np.empty(n_frames, dtype=np.float64)
+    for i in range(n_frames):
+        frame = audio_1d[i * frame_len : (i + 1) * frame_len].astype(np.float64)
+        rms_vals[i] = np.sqrt(np.mean(frame ** 2) + 1e-12)
+
+    p10 = float(np.percentile(rms_vals, 10))
+    return float(20 * np.log10(p10 + 1e-12))
+
+
+def _estimated_snr_db(audio_1d: np.ndarray, sr: int, frame_len_ms: float = 32) -> float:
+    """Estimated SNR: active-speech RMS (>p50 frames) minus noise floor (p10) in dB."""
+    frame_len = int(sr * frame_len_ms / 1000)
+    n_frames = len(audio_1d) // frame_len
+    if n_frames == 0:
+        return 0.0
+
+    rms_vals = np.empty(n_frames, dtype=np.float64)
+    for i in range(n_frames):
+        frame = audio_1d[i * frame_len : (i + 1) * frame_len].astype(np.float64)
+        rms_vals[i] = np.sqrt(np.mean(frame ** 2) + 1e-12)
+
+    p10 = float(np.percentile(rms_vals, 10))
+    p50 = float(np.percentile(rms_vals, 50))
+    active_rms = float(np.mean(rms_vals[rms_vals >= p50])) if np.any(rms_vals >= p50) else p50
+
+    snr = 20 * np.log10((active_rms + 1e-12) / (p10 + 1e-12))
+    return float(snr)

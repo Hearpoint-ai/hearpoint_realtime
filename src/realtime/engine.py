@@ -22,6 +22,7 @@ from src.utils import get_torch_device
 
 from .config import Config, TRANSPARENCY_SOUND_PATH
 from .coreml_support import CoreMLModel
+from .denoise import SpectralGate
 from .metrics import _ensure_stereo
 from .perf_logger import PerformanceLogger
 
@@ -68,6 +69,18 @@ class RealtimeInference:
         self.passthrough_mode = config.debug.passthrough
         self.debug = config.debug.verbose
         self.save_debug_dir = config.debug.save_dir
+
+        # Spectral-gate denoiser
+        dc = config.denoise
+        self.denoiser = SpectralGate(
+            frame_size=dc.frame_size,
+            hop_size=config.audio.chunk_size,
+            sr=config.audio.sample_rate,
+            noise_alpha=dc.noise_alpha,
+            gain_floor=dc.gain_floor,
+            strength=dc.strength,
+            enabled=dc.enabled,
+        )
         if self.save_debug_dir:
             self.save_debug_dir.mkdir(parents=True, exist_ok=True)
             self.debug_inputs = []
@@ -445,10 +458,11 @@ class RealtimeInference:
 
         # --- Post: tensor -> numpy ---
         t_post = time.perf_counter()
-        output_audio = output.squeeze(0).cpu().numpy()
+        output_audio = output.squeeze(0).cpu().numpy()  # [2, chunk_size]
+        output_audio = output_audio.T  # [chunk_size, 2]
+        output_audio = self.denoiser.process_chunk_stereo(output_audio)
         output_audio *= self.output_gain
         output_audio = np.clip(output_audio, -1.0, 1.0)
-        output_audio = output_audio.T
 
         if self.output_channels == 1:
             output_audio = output_audio.mean(axis=1, keepdims=True)

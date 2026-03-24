@@ -19,7 +19,16 @@ from src.utils import get_torch_device
 
 from .config import Config, _normalize_embedding_model_id
 from .coreml_support import CoreMLModel
-from .metrics import _cosine_similarity, _ensure_stereo, _si_sdr_stereo
+from .denoise import SpectralGate
+from .metrics import (
+    _cosine_similarity,
+    _ensure_stereo,
+    _estimated_snr_db,
+    _hf_energy_ratio,
+    _noise_floor_db,
+    _si_sdr_stereo,
+    _spectral_flatness,
+)
 
 
 @dataclass
@@ -59,6 +68,18 @@ class FileBasedTest:
             raise ValueError("Speaker embedding path is required")
         self._load_embedding(config.model.embedding)
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
+
+        # --- Denoiser ---
+        dc = config.denoise
+        self.denoiser = SpectralGate(
+            frame_size=dc.frame_size,
+            hop_size=config.audio.chunk_size,
+            sr=config.audio.sample_rate,
+            noise_alpha=dc.noise_alpha,
+            gain_floor=dc.gain_floor,
+            strength=dc.strength,
+            enabled=dc.enabled,
+        )
 
         # --- Optimization: compile ---
         self._compiled = False
@@ -179,7 +200,9 @@ class FileBasedTest:
                         lookahead_audio=la_tensor,
                     )
 
-            out = np.clip(output.squeeze(0).cpu().numpy().T, -1.0, 1.0)
+            out = output.squeeze(0).cpu().numpy().T  # [chunk_size, 2]
+            out = self.denoiser.process_chunk_stereo(out)
+            out = np.clip(out, -1.0, 1.0)
             elapsed = time.perf_counter() - t0
 
             # NaN tracking: always, from chunk 0 (NaNs during warmup are bugs too)
@@ -219,8 +242,19 @@ class FileBasedTest:
             rms_in = float(np.sqrt(np.mean(inp.astype(np.float64) ** 2)))
             rms_out = float(np.sqrt(np.mean(out_all.astype(np.float64) ** 2)))
             clip_ratio = float(np.mean(np.abs(out_all) >= 1.0))
+
+            # Noise metrics (computed on mono downmix of post-warmup output)
+            out_mono = out_all.mean(axis=1)
+            noise_spectral_flatness = _spectral_flatness(out_mono, self.sample_rate)
+            noise_hf_energy_ratio = _hf_energy_ratio(out_mono, self.sample_rate)
+            noise_floor_db = _noise_floor_db(out_mono, self.sample_rate)
+            noise_estimated_snr_db = _estimated_snr_db(out_mono, self.sample_rate)
         else:
             rms_in = rms_out = clip_ratio = 0.0
+            noise_spectral_flatness = 0.0
+            noise_hf_energy_ratio = 0.0
+            noise_floor_db = -100.0
+            noise_estimated_snr_db = 0.0
 
         print(f"Done! avg={latency_ms_avg:.2f}ms  RTF={rtf_avg:.3f}  " f"nan={nan_count}  clip={clip_ratio:.4f}")
 
@@ -303,6 +337,10 @@ class FileBasedTest:
             "si_sdr_input": si_sdr_in,
             "si_sdr_output": si_sdr_out,
             "si_sdr_improvement": si_sdr_i,
+            "spectral_flatness": noise_spectral_flatness,
+            "hf_energy_ratio": noise_hf_energy_ratio,
+            "noise_floor_db": noise_floor_db,
+            "estimated_snr_db": noise_estimated_snr_db,
         }
 
         plot_data: PlotData | None = None

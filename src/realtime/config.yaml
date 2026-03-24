@@ -32,6 +32,13 @@ logging:
   enabled: true            # e.g. true — write per-second snapshots + session summary to JSONL
   log_dir: logs/realtime   # e.g. "logs/realtime" — output directory for log files
 
+denoise:
+  enabled: false           # e.g. true — apply spectral-gate noise reduction to model output
+  strength: 1.0            # 0.0 = bypass, 1.0 = full denoising
+  noise_alpha: 0.98        # EMA smoothing for noise floor estimate (higher = slower adaptation)
+  gain_floor: 0.05         # minimum spectral gain (~-26dB), prevents musical noise
+  frame_size: 512          # FFT frame size; must be multiple of chunk_size
+
 test:
   enabled: false           # e.g. true — process a file instead of live audio
   input_file: media/si_sdr_fixture/mixture.wav        # e.g. "media/mixture.wav" — input audio file

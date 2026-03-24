@@ -111,6 +111,17 @@ class LoggingConfig:
 
 
 @dataclass
+class DenoiseConfig:
+    """Spectral-gate noise reduction configuration."""
+
+    enabled: bool = False
+    strength: float = 1.0
+    noise_alpha: float = 0.98
+    gain_floor: float = 0.05
+    frame_size: int = 512
+
+
+@dataclass
 class ControllerConfig:
     """Maps key identifiers to command names (loaded from the 'controller' YAML section)."""
 
@@ -128,6 +139,7 @@ class Config:
     test: TestConfig = field(default_factory=TestConfig)
     name_detection: NameDetectionConfig = field(default_factory=NameDetectionConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    denoise: DenoiseConfig = field(default_factory=DenoiseConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
 
     @classmethod
@@ -160,6 +172,7 @@ class Config:
         test_data = data.get("test", {}) or {}
         name_detection_data = data.get("name_detection", {}) or {}
         logging_data = data.get("logging", {}) or {}
+        denoise_data = data.get("denoise", {}) or {}
         controller_raw = data.get("controller", {}) or {}
 
         # Load embedding settings from top-level config
@@ -217,6 +230,13 @@ class Config:
             logging=LoggingConfig(
                 enabled=logging_data.get("enabled", False),
                 log_dir=to_path(logging_data.get("log_dir")) or REPO_ROOT / "logs/realtime",
+            ),
+            denoise=DenoiseConfig(
+                enabled=denoise_data.get("enabled", False),
+                strength=denoise_data.get("strength", 1.0),
+                noise_alpha=denoise_data.get("noise_alpha", 0.98),
+                gain_floor=denoise_data.get("gain_floor", 0.05),
+                frame_size=denoise_data.get("frame_size", 512),
             ),
             controller=ControllerConfig(
                 bindings={str(k): str(v) for k, v in controller_raw.items()},
