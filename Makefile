@@ -4,7 +4,7 @@ PYTHON ?= /opt/homebrew/anaconda3/envs/hearpoint-realtime/bin/python
 NAME ?= User
 AUDIO ?= media/enrollments/sample.wav
 DURATION ?= 10
-EMBEDDING_MODEL ?= resemblyzer
+EMBEDDING_MODEL ?= beamformer_resemblyzer
 
 # Generate the SI-SDR fixture (run once, or whenever speakers change)
 make-fixture:

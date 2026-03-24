@@ -1,6 +1,5 @@
 from pathlib import Path
 from typing import Optional
-import uuid
 
 import json
 import numpy as np
@@ -17,18 +16,6 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = BACKEND_DIR / "src" / "configs" / "beamformer_tfgridnet.json"
 DEFAULT_CHECKPOINT_PATH = BACKEND_DIR / "weights" / "beamformer.ckpt"
 
-# =============================================================================
-# DEBUG EXPORT: beamformer-separated WAVs (BEFORE Resemblyzer)
-# -----------------------------------------------------------------------------
-# The enrollment TFGridNet outputs n_srcs separate estimates (typically 2:
-# target vs residual/other). We write ONE mono .wav per source under
-# media/temp/ on every enrollment call so you can listen to what the
-# beamformer produced before embedding. This does NOT affect the embedding
-# math — Resemblyzer still uses source index 0 only (see _beamform_separate).
-# Filenames include a short run id to avoid collisions on rapid successive runs.
-# =============================================================================
-_BEAMFORMER_TEMP_DIR = BACKEND_DIR / "media" / "temp"
-
 
 class BeamformerResemblyzerSpeakerEmbeddingModel(SpeakerEmbeddingModel):
     """
@@ -43,6 +30,7 @@ class BeamformerResemblyzerSpeakerEmbeddingModel(SpeakerEmbeddingModel):
         sample_rate: int = 16000,
         device: Optional[str] = None,
     ):
+        print("Initializing BeamformerResemblyzerSpeakerEmbeddingModel====a=sdf=asdfas=df=as=")
         self.checkpoint_path = Path(checkpoint_path or DEFAULT_CHECKPOINT_PATH)
         self.config_path = Path(config_path or DEFAULT_CONFIG_PATH)
         self.sample_rate = sample_rate
@@ -83,48 +71,6 @@ class BeamformerResemblyzerSpeakerEmbeddingModel(SpeakerEmbeddingModel):
         if unexpected:
             print(f"[BeamformerResemblyzerSpeakerEmbeddingModel] Unexpected keys: {unexpected}")
 
-    def _save_beamformer_separated_wavs(
-        self,
-        separated_np: np.ndarray,
-        *,
-        label: str,
-        run_id: str,
-    ) -> None:
-        """
-        DEBUG: write each beamformer output source to disk BEFORE Resemblyzer.
-
-        ``separated_np`` is shape (n_srcs, T) — one row per TFGridNet source
-        (see ``src/models/tfgridnet_enrollment/tfgridnet.py::Net``, n_srcs=2).
-        """
-        _BEAMFORMER_TEMP_DIR.mkdir(parents=True, exist_ok=True)
-        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)[:80]
-        n_srcs = int(separated_np.shape[0])
-        for src_idx in range(n_srcs):
-            mono = np.asarray(separated_np[src_idx], dtype=np.float32)
-            out_path = _BEAMFORMER_TEMP_DIR / f"{safe}_beamformer_src{src_idx}_{run_id}.wav"
-            sf.write(str(out_path), mono, self.sample_rate)
-
-    def _beamform_separate(self, audio_2xN: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Run the beamformer and return ALL separated sources plus the slice used for embedding.
-
-        Returns:
-            separated_np: (n_srcs, T) — every TFGridNet output (e.g. 2 rows for n_srcs=2).
-            cleaned_target: (T,) — source index 0 only; this is what goes to Resemblyzer
-                (same as ``separated[:, :1, :]`` in the forward path).
-        """
-        if audio_2xN.ndim != 2 or audio_2xN.shape[0] != 2:
-            raise ValueError(f"Expected binaural audio with shape [2, N], got {audio_2xN.shape}")
-
-        with torch.no_grad():
-            mixture = torch.from_numpy(audio_2xN.astype(np.float32, copy=False)).unsqueeze(0).to(self.device)
-            separated = self._beamformer(mixture)  # [B, n_srcs, T]
-            separated_np = separated[0].detach().cpu().numpy().astype(np.float32)
-
-        # First source = target estimate fed to Resemblyzer (matches separated[:, :1, :])
-        cleaned_target = separated_np[0].copy()
-        return separated_np, cleaned_target
-
     def _load_audio(self, audio_path: Path) -> np.ndarray:
         waveform, sr = sf.read(str(audio_path))
         waveform = np.asarray(waveform, dtype=np.float32)
@@ -150,18 +96,11 @@ class BeamformerResemblyzerSpeakerEmbeddingModel(SpeakerEmbeddingModel):
             cleaned = est_target.squeeze(0).squeeze(0).cpu().numpy().astype(np.float32)
         return cleaned
 
-
     def compute_embedding(self, audio_path: Path) -> np.ndarray:
         if not audio_path.exists():
             raise FileNotFoundError(f"Enrollment audio not found: {audio_path}")
         audio_2xN = self._load_audio(audio_path)
-        # cleaned_target = self._beamform_target(audio_2xN)
-        separated_np, cleaned_target = self._beamform_separate(audio_2xN)
-
-        # --- DEBUG EXPORT (see module docstring at top): WAVs of ALL beamformer sources ---
-        run_id = uuid.uuid4().hex[:8]
-        self._save_beamformer_separated_wavs(separated_np, label=audio_path.stem, run_id=run_id)
-
+        cleaned_target = self._beamform_target(audio_2xN)
         embedding = self._resemblyzer.compute_embedding_from_array(
             cleaned_target[np.newaxis, :], self.sample_rate
         )
@@ -173,14 +112,7 @@ class BeamformerResemblyzerSpeakerEmbeddingModel(SpeakerEmbeddingModel):
         audio_2xN = audio.astype(np.float32, copy=False)
         if sample_rate != self.sample_rate:
             audio_2xN = resampy.resample(audio_2xN, sample_rate, self.sample_rate, axis=-1)
-
-        # cleaned_target = self._beamform_target(audio_2xN)
-        separated_np, cleaned_target = self._beamform_separate(audio_2xN)
-
-        # --- DEBUG EXPORT (see module docstring at top): WAVs of ALL beamformer sources ---
-        run_id = uuid.uuid4().hex[:8]
-        self._save_beamformer_separated_wavs(separated_np, label="enroll_from_array", run_id=run_id)
-
+        cleaned_target = self._beamform_target(audio_2xN)
         embedding = self._resemblyzer.compute_embedding_from_array(
             cleaned_target[np.newaxis, :], self.sample_rate
         )
