@@ -222,6 +222,10 @@ class RealtimeInference:
                 pass
 
     def _apply_control_command(self, command: ControlCommand) -> None:
+        if command.kind == "set_output_gain":
+            self.output_gain = float(command.payload)
+            return
+
         if command.kind == "set_embedding":
             self.embedding = self._make_embedding_tensor(command.payload)
             self._reset_runtime_context()
@@ -491,6 +495,11 @@ class RealtimeInference:
     def set_passthrough(self, enabled: bool) -> None:
         """Toggle passthrough mode at runtime through the processing thread."""
         self._submit_control_command(ControlCommand(kind="set_passthrough", payload=enabled, manual=True))
+
+    def set_output_gain(self, gain: float) -> None:
+        """Adjust output gain at runtime. Clamped to [0.0, 10.0]."""
+        gain = max(0.0, min(10.0, gain))
+        self._submit_control_command(ControlCommand(kind="set_output_gain", payload=gain))
 
     def set_target_word(self, word: str) -> None:
         """Change the Vosk name-detection target word at runtime."""
