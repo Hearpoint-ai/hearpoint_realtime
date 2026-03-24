@@ -111,6 +111,13 @@ class LoggingConfig:
 
 
 @dataclass
+class ControllerConfig:
+    """Maps key identifiers to command names (loaded from the 'controller' YAML section)."""
+
+    bindings: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     """Complete configuration for real-time inference."""
 
@@ -121,6 +128,7 @@ class Config:
     test: TestConfig = field(default_factory=TestConfig)
     name_detection: NameDetectionConfig = field(default_factory=NameDetectionConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    controller: ControllerConfig = field(default_factory=ControllerConfig)
 
     @classmethod
     def from_yaml(cls, yaml_path: Path | str) -> "Config":
@@ -152,6 +160,7 @@ class Config:
         test_data = data.get("test", {}) or {}
         name_detection_data = data.get("name_detection", {}) or {}
         logging_data = data.get("logging", {}) or {}
+        controller_raw = data.get("controller", {}) or {}
 
         # Load embedding settings from top-level config
         embedding_path = to_path(data.get("embedding"))
@@ -208,6 +217,9 @@ class Config:
             logging=LoggingConfig(
                 enabled=logging_data.get("enabled", False),
                 log_dir=to_path(logging_data.get("log_dir")) or REPO_ROOT / "logs/realtime",
+            ),
+            controller=ControllerConfig(
+                bindings={str(k): str(v) for k, v in controller_raw.items()},
             ),
         )
 

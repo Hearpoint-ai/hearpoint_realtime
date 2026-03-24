@@ -8,7 +8,7 @@ audio:
   chunk_size: 128          # e.g. 128 — samples per processing chunk
   input_device: null       # e.g. 1 — device index (run --list-devices); null = system default
   output_device: null      # e.g. 2 — device index; null = system default
-  input_channels: 2        # e.g. 2 — 1 for mono mic, 2 for stereo
+  input_channels: 1        # e.g. 2 — 1 for mono mic, 2 for stereo
   output_channels: 2       # e.g. 2 — null = auto-detect
   buffer_size_chunks: 4    # e.g. 4 — input buffer depth; higher = more stable, more latency
   output_gain: 3.0         # e.g. 1.0 — multiplier; 1.0 = unity, 2.0 = +6dB
@@ -33,7 +33,7 @@ logging:
   log_dir: logs/realtime   # e.g. "logs/realtime" — output directory for log files
 
 test:
-  enabled: true           # e.g. true — process a file instead of live audio
+  enabled: false           # e.g. true — process a file instead of live audio
   input_file: media/si_sdr_fixture/mixture.wav        # e.g. "media/mixture.wav" — input audio file
   output_dir: reports/eval/output_audio  # e.g. "reports/eval/output_audio" — directory for enhanced output WAV
   reference_file: media/si_sdr_fixture/reference.wav  # e.g. "media/reference.wav" — clean ref for SI-SDR; null = skip
@@ -41,3 +41,14 @@ test:
   threshold_profile: dev   # e.g. "dev" — profile from thresholds.yaml to check against; null = skip
   warmup_chunks: 10        # e.g. 10 — chunks excluded from metric aggregation
   generate_plots: true     # e.g. true — generate spectrogram, RTF distribution, SI-SDRi vs SNR plots (Requires embedding path to be si_sdr_fixture)
+
+controller:
+  1: prev_speaker
+  2: select
+  3: enroll
+  t: next_speaker
+  e: name
+  n: esc
+  7: decrease_gain
+  8: toggle_passthrough
+  9: increase_gain
