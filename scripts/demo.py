@@ -175,7 +175,7 @@ class DemoApp:
         _command_labels = {
             "next_speaker":       "Next Spk",
             "prev_speaker":       "Prev Spk",
-            "select":             "Select",
+            "select":             "Enter",
             "toggle_passthrough": "Toggle",
             "enroll":             "Enroll",
             "name":               "Name",
@@ -245,18 +245,11 @@ class DemoApp:
 
         if self.naming:
             if ch in ("\r", "\n"):  # Enter — confirm
-                word = self._name_input_buffer.strip()
-                if word:
-                    self.engine.set_target_word(word)
-                    self.status_message = f"Target name set to: {word}"
-                else:
-                    self.status_message = "Name unchanged (empty input)"
-                self.naming = False
-                self._name_input_buffer = ""
+                self._confirm_rename()
             elif ch == "\x1b":  # Escape — cancel
                 self.naming = False
                 self._name_input_buffer = ""
-                self.status_message = "Name change cancelled"
+                self.status_message = "Rename cancelled"
             elif ch == "\x7f":  # Backspace
                 self._name_input_buffer = self._name_input_buffer[:-1]
             elif ch.isprintable():
@@ -282,7 +275,7 @@ class DemoApp:
         elif command == "name":
             self.naming = True
             self._name_input_buffer = ""
-            self.status_message = "Type a name and press Enter"
+            self.status_message = "Type a name and press Enter to confirm"
         elif command == "next_speaker":
             self._nav_speaker(+1)
         elif command == "prev_speaker":
@@ -297,6 +290,30 @@ class DemoApp:
             new_gain = min(10.0, self.engine.output_gain + 0.5)
             self.engine.set_output_gain(new_gain)
             self.status_message = f"Gain: {new_gain:.1f}x"
+
+    def _confirm_rename(self) -> None:
+        word = self._name_input_buffer.strip()
+        self.naming = False
+        self._name_input_buffer = ""
+        if not word:
+            self.status_message = "Name unchanged (empty input)"
+            return
+        if not self._speaker_list:
+            self.status_message = "No speaker to rename"
+            return
+        focused = self._focused_idx % len(self._speaker_list)
+        spk = self._speaker_list[focused]
+        old_name = spk.name
+        speakers, recordings, extractions = self.store.load()
+        for s in speakers:
+            if s.id == spk.id:
+                s.name = word
+                break
+        self.store.save(speakers, recordings, extractions)
+        self._speaker_list = self._load_speakers()
+        if self.current_speaker == old_name:
+            self.current_speaker = word
+        self.status_message = f"Renamed '{old_name}' to '{word}'"
 
     def _nav_speaker(self, delta: int) -> None:
         if not self._speaker_list:

@@ -29,10 +29,10 @@ name_detection:
   target_word: toggle      # e.g. "derron" — spoken word that triggers toggle
 
 enrollment:
-  use_beamformer: false     # e.g. true — beamform binaural audio before embedding (beamformer_resemblyzer); false = plain resemblyzer
+  use_beamformer: true     # e.g. true — beamform binaural audio before embedding (beamformer_resemblyzer); false = plain resemblyzer
 
 logging:
-  enabled: true            # e.g. true — write per-second snapshots + session summary to JSONL
+  enabled: false            # e.g. true — write per-second snapshots + session summary to JSONL
   log_dir: logs/realtime   # e.g. "logs/realtime" — output directory for log files
 
 test:
