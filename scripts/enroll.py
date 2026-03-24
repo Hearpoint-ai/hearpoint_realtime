@@ -5,6 +5,9 @@ Usage:
     python enroll.py --name "Alice" --audio /path/to/recording.wav
     python enroll.py --name "Alice" --record --duration 5
     python enroll.py --name "Alice" --audio /path/to/recording.wav --embedding-model tfgridnet
+
+The embedding model defaults to the value of enrollment.use_beamformer in config.yaml
+(beamformer_resemblyzer when true, resemblyzer when false). Pass --embedding-model to override.
 """
 
 import argparse
@@ -28,6 +31,7 @@ DATA_FILE = MEDIA_DIR / "data.json"
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.ml.factory import EMBEDDING_MODEL_IDS, create_embedding_model, embedding_model_class_name
+from src.realtime.config import Config, DEFAULT_YAML_CONFIG_PATH
 
 SAMPLE_RATE = 16000
 
@@ -88,8 +92,8 @@ def main():
     parser.add_argument(
         "--embedding-model",
         choices=EMBEDDING_MODEL_IDS,
-        default="resemblyzer",
-        help="Speaker embedding model to use (default: resemblyzer)",
+        default=None,
+        help="Speaker embedding model to use (default: from enrollment.use_beamformer in config.yaml)",
     )
     args = parser.parse_args()
 
@@ -116,7 +120,11 @@ def main():
 
     # Compute embedding
     t0 = time.perf_counter()
-    model_id = args.embedding_model
+    if args.embedding_model is not None:
+        model_id = args.embedding_model
+    else:
+        cfg = Config.from_yaml(DEFAULT_YAML_CONFIG_PATH)
+        model_id = "beamformer_resemblyzer" if cfg.enrollment.use_beamformer else "resemblyzer"
     model = create_embedding_model(model_id)
     embedding = model.compute_embedding(dest_audio)
     processing_ms = (time.perf_counter() - t0) * 1000

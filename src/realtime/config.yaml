@@ -8,7 +8,7 @@ audio:
   chunk_size: 128          # e.g. 128 — samples per processing chunk
   input_device: null       # e.g. 1 — device index (run --list-devices); null = system default
   output_device: null      # e.g. 2 — device index; null = system default
-  input_channels: 1        # e.g. 2 — 1 for mono mic, 2 for stereo
+  input_channels: 2        # e.g. 2 — 1 for mono mic, 2 for stereo
   output_channels: 2       # e.g. 2 — null = auto-detect
   buffer_size_chunks: 4    # e.g. 4 — input buffer depth; higher = more stable, more latency
   output_gain: 3.0         # e.g. 1.0 — multiplier; 1.0 = unity, 2.0 = +6dB
@@ -27,6 +27,9 @@ name_detection:
   enabled: true            # e.g. true — listen for target word and toggle passthrough mode
   model_path: src/models/vosk-model-small-en-us-0.15  # e.g. "src/models/vosk-model-small-en-us-0.15" — Vosk model dir
   target_word: toggle      # e.g. "derron" — spoken word that triggers toggle
+
+enrollment:
+  use_beamformer: false     # e.g. true — beamform binaural audio before embedding (beamformer_resemblyzer); false = plain resemblyzer
 
 logging:
   enabled: true            # e.g. true — write per-second snapshots + session summary to JSONL

@@ -4,7 +4,6 @@ PYTHON ?= /opt/homebrew/anaconda3/envs/hearpoint-realtime/bin/python
 NAME ?= User
 AUDIO ?= media/enrollments/sample.wav
 DURATION ?= 10
-EMBEDDING_MODEL ?= beamformer_resemblyzer
 
 # Generate the SI-SDR fixture (run once, or whenever speakers change)
 make-fixture:
@@ -24,13 +23,13 @@ eval-fast:
 # Example:
 #   make enroll NAME=Hady AUDIO=/path/to/enrollment.wav EMBEDDING_MODEL=resemblyzer
 enroll:
-	$(PYTHON) scripts/enroll.py --name "$(NAME)" --audio "$(AUDIO)" --embedding-model "$(EMBEDDING_MODEL)"
+	$(PYTHON) scripts/enroll.py --name "$(NAME)" --audio "$(AUDIO)" $(if $(EMBEDDING_MODEL),--embedding-model "$(EMBEDDING_MODEL)",)
 
 # Enroll a user by recording from microphone.
 # Example:
 #   make enroll-record NAME=Hady DURATION=5 EMBEDDING_MODEL=tfgridnet
 enroll-record:
-	$(PYTHON) scripts/enroll.py --name "$(NAME)" --record --duration "$(DURATION)" --embedding-model "$(EMBEDDING_MODEL)"
+	$(PYTHON) scripts/enroll.py --name "$(NAME)" --record --duration "$(DURATION)" $(if $(EMBEDDING_MODEL),--embedding-model "$(EMBEDDING_MODEL)",)
 
 demo:
 	$(PYTHON) scripts/demo.py

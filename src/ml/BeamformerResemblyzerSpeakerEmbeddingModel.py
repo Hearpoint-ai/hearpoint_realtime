@@ -30,7 +30,6 @@ class BeamformerResemblyzerSpeakerEmbeddingModel(SpeakerEmbeddingModel):
         sample_rate: int = 16000,
         device: Optional[str] = None,
     ):
-        print("Initializing BeamformerResemblyzerSpeakerEmbeddingModel====a=sdf=asdfas=df=as=")
         self.checkpoint_path = Path(checkpoint_path or DEFAULT_CHECKPOINT_PATH)
         self.config_path = Path(config_path or DEFAULT_CONFIG_PATH)
         self.sample_rate = sample_rate
