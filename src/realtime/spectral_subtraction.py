@@ -7,6 +7,8 @@ Real-time path: overlap-add streaming with scipy.signal.ShortTimeFFT.
 Optional parameters (reduce musical noise / over-suppression):
   alpha — over-subtraction factor (>1 subtracts more noise; can increase musical noise).
   beta  — spectral floor as a fraction of |N|; leaves residual noise but reduces warbling.
+  min_magnitude_ratio — never output less than this fraction of the input magnitude per bin
+    (prevents silence when |N| was over-estimated vs speech).
 """
 
 from __future__ import annotations
@@ -148,7 +150,8 @@ class StreamingSpectralSubtractorMono:
         win_length: int,
         *,
         alpha: float = 1.0,
-        beta: float = 0.0,
+        beta: float = 0.05,
+        min_magnitude_ratio: float = 0.08,
     ) -> None:
         self._sft = _build_sft(sample_rate, n_fft, hop_length, win_length)
         n_bins = n_fft // 2 + 1
@@ -160,6 +163,7 @@ class StreamingSpectralSubtractorMono:
         self._noise_mag = noise_mag.astype(np.float64)
         self._alpha = float(alpha)
         self._beta = float(beta)
+        self._min_mag_ratio = max(0.0, float(min_magnitude_ratio))
         self._hop = hop_length
         self._win_length = win_length
 
@@ -192,6 +196,8 @@ class StreamingSpectralSubtractorMono:
                 mag - self._alpha * self._noise_mag,
                 self._beta * self._noise_mag,
             )
+            if self._min_mag_ratio > 0:
+                mag_new = np.maximum(mag_new, self._min_mag_ratio * mag)
             Z_new = np.zeros_like(Z)
             Z_new[:, 0] = mag_new * np.exp(1j * phase)
             y = np.asarray(self._sft.istft(Z_new), dtype=np.float64)
@@ -231,7 +237,8 @@ class StreamingSpectralSubtractor:
         win_length: int,
         *,
         alpha: float = 1.0,
-        beta: float = 0.0,
+        beta: float = 0.05,
+        min_magnitude_ratio: float = 0.08,
     ) -> None:
         self._kw = dict(
             sample_rate=sample_rate,
@@ -241,6 +248,7 @@ class StreamingSpectralSubtractor:
             win_length=win_length,
             alpha=alpha,
             beta=beta,
+            min_magnitude_ratio=min_magnitude_ratio,
         )
         self._L = StreamingSpectralSubtractorMono(**self._kw)
         self._R: StreamingSpectralSubtractorMono | None = None
@@ -329,6 +337,7 @@ def build_streaming_subtractor_from_config(
         win,
         alpha=ss.alpha,
         beta=ss.beta,
+        min_magnitude_ratio=ss.min_magnitude_ratio,
     )
 
 
@@ -344,6 +353,7 @@ def build_streaming_subtractor_from_magnitude(config: Any, magnitude: np.ndarray
         ss.win_length,
         alpha=ss.alpha,
         beta=ss.beta,
+        min_magnitude_ratio=ss.min_magnitude_ratio,
     )
 
 

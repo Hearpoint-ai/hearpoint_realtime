@@ -38,7 +38,9 @@ class SpectralSubtractionTests(unittest.TestCase):
         n_fft, hop, win = 512, 128, 512
         noise = rng.standard_normal(3 * sr).astype(np.float64)
         noise_mag = estimate_noise_magnitude_spectrum(noise, sr, n_fft, hop, win)
-        sub = StreamingSpectralSubtractorMono(sr, noise_mag, n_fft, hop, win, alpha=1.0, beta=0.0)
+        sub = StreamingSpectralSubtractorMono(
+            sr, noise_mag, n_fft, hop, win, alpha=1.0, beta=0.0, min_magnitude_ratio=0.0
+        )
 
         chunk = 256
         n = 2 * sr

@@ -135,7 +135,10 @@ class SpectralSubtractionConfig:
     hop_length: int = 128
     win_length: int = 512
     alpha: float = 1.0
-    beta: float = 0.0
+    beta: float = 0.05
+    # Never reduce a bin below this fraction of its input magnitude (prevents total silence
+    # when the noise profile is too large vs speech, or STFT scaling mismatches).
+    min_magnitude_ratio: float = 0.08
     apply_in_passthrough: bool = False
     reset_on_start: bool = True
     capture_duration_s: float = 3.0
@@ -261,7 +264,8 @@ class Config:
                 hop_length=ss_data.get("hop_length", 128),
                 win_length=ss_data.get("win_length", 512),
                 alpha=float(ss_data.get("alpha", 1.0)),
-                beta=float(ss_data.get("beta", 0.0)),
+                beta=float(ss_data.get("beta", 0.05)),
+                min_magnitude_ratio=float(ss_data.get("min_magnitude_ratio", 0.08)),
                 apply_in_passthrough=ss_data.get("apply_in_passthrough", False),
                 reset_on_start=ss_data.get("reset_on_start", True),
                 capture_duration_s=float(ss_data.get("capture_duration_s", 3.0)),

@@ -39,7 +39,8 @@ spectral_subtraction:
   hop_length: 128
   win_length: 512
   alpha: 1.0                  # over-subtraction (>1 stronger; may add musical noise)
-  beta: 0.0                   # spectral floor vs noise spectrum (reduces warble; leaves more hiss)
+  beta: 0.05                  # spectral floor vs noise spectrum (0 = can silence bins if noise_mag > signal)
+  min_magnitude_ratio: 0.08   # never below this fraction of input |Y| per bin (prevents total silence)
   apply_in_passthrough: false # if true, also run in passthrough mode
   reset_on_start: true        # reset OLA state with model buffers / each file run
   capture_duration_s: 3.0     # seconds of separated output to record (stay quiet)
