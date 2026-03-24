@@ -469,8 +469,8 @@ def main():
     parser.add_argument(
         "--embedding-model",
         choices=EMBEDDING_MODEL_IDS,
-        default="resemblyzer",
-        help="Speaker embedding model (default: resemblyzer)",
+        default=None,
+        help="Speaker embedding model (default: from enrollment.use_beamformer in config.yaml)",
     )
     parser.add_argument(
         "--config",
@@ -481,6 +481,9 @@ def main():
     args = parser.parse_args()
 
     config = Config.from_yaml(args.config)
+    embedding_model_id = args.embedding_model or (
+        "beamformer_resemblyzer" if config.enrollment.use_beamformer else "resemblyzer"
+    )
 
     if config.test.enabled:
         # File-based test mode: no audio devices needed
@@ -513,7 +516,7 @@ def main():
         perf_logger = PerformanceLogger(config.logging.log_dir)
         perf_logger.start()
 
-    app = DemoApp(config, args.embedding_model, logger=perf_logger)
+    app = DemoApp(config, embedding_model_id, logger=perf_logger)
     app.run()
 
 

@@ -43,7 +43,11 @@ Embedding model ID used for enrollment compatibility checks in file mode cosine 
 embedding_model: resemblyzer
 ```
 
-Allowed values: `resemblyzer`, `tfgridnet`.
+Allowed values: `resemblyzer`, `tfgridnet`, `beamformer_resemblyzer`.
+
+`beamformer_resemblyzer` is intended for noisy enrollment: it first runs a TFGridNet beamformer
+to estimate the target speech from binaural enrollment audio, then feeds the cleaned target audio
+to Resemblyzer to produce the final 256-d embedding.
 
 ### `audio`
 

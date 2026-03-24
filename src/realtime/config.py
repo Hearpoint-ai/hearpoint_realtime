@@ -118,6 +118,13 @@ class ControllerConfig:
 
 
 @dataclass
+class EnrollmentConfig:
+    """Enrollment-related configuration."""
+
+    use_beamformer: bool = True
+
+
+@dataclass
 class Config:
     """Complete configuration for real-time inference."""
 
@@ -129,6 +136,7 @@ class Config:
     name_detection: NameDetectionConfig = field(default_factory=NameDetectionConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
+    enrollment: EnrollmentConfig = field(default_factory=EnrollmentConfig)
 
     @classmethod
     def from_yaml(cls, yaml_path: Path | str) -> "Config":
@@ -161,6 +169,7 @@ class Config:
         name_detection_data = data.get("name_detection", {}) or {}
         logging_data = data.get("logging", {}) or {}
         controller_raw = data.get("controller", {}) or {}
+        enrollment_data = data.get("enrollment", {}) or {}
 
         # Load embedding settings from top-level config
         embedding_path = to_path(data.get("embedding"))
@@ -220,6 +229,9 @@ class Config:
             ),
             controller=ControllerConfig(
                 bindings={str(k): str(v) for k, v in controller_raw.items()},
+            ),
+            enrollment=EnrollmentConfig(
+                use_beamformer=enrollment_data.get("use_beamformer", True),
             ),
         )
 
