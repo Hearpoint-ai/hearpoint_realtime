@@ -497,8 +497,8 @@ class RealtimeInference:
         self._submit_control_command(ControlCommand(kind="set_passthrough", payload=enabled, manual=True))
 
     def set_output_gain(self, gain: float) -> None:
-        """Adjust output gain at runtime. Clamped to [0.0, 6.0]."""
-        gain = max(0.0, min(6.0, gain))
+        """Adjust output gain at runtime. Clamped to [0.0, 10.0]."""
+        gain = max(0.0, min(10.0, gain))
         self._submit_control_command(ControlCommand(kind="set_output_gain", payload=gain))
 
     def set_target_word(self, word: str) -> None:

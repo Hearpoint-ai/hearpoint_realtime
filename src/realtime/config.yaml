@@ -43,12 +43,12 @@ test:
   generate_plots: true     # e.g. true — generate spectrogram, RTF distribution, SI-SDRi vs SNR plots (Requires embedding path to be si_sdr_fixture)
 
 controller:
-  1: prev_speaker
-  2: select
-  3: enroll
-  t: next_speaker
-  e: name
-  n: esc
-  7: decrease_gain
-  8: toggle_passthrough
-  9: increase_gain
+  1: prev_speaker            #top left
+  2: esc                     #top middle
+  3: enroll                  #top right
+  t: next_speaker            #bottom left
+  e: name                    #bottom middle
+  n: select                  #bottom right
+  7: decrease_gain           #knob left
+  8: toggle_passthrough      #knob button
+  9: increase_gain           #knob right 

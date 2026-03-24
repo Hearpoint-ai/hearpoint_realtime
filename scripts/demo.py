@@ -294,7 +294,7 @@ class DemoApp:
             self.engine.set_output_gain(new_gain)
             self.status_message = f"Gain: {new_gain:.1f}x"
         elif command == "increase_gain":
-            new_gain = min(6.0, self.engine.output_gain + 0.5)
+            new_gain = min(10.0, self.engine.output_gain + 0.5)
             self.engine.set_output_gain(new_gain)
             self.status_message = f"Gain: {new_gain:.1f}x"
 
