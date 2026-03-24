@@ -5,16 +5,18 @@ from importlib import import_module
 from .interfaces import SpeakerEmbeddingModel
 
 # Stable IDs used across CLI/config/sidecar metadata.
-EMBEDDING_MODEL_IDS = ("resemblyzer", "tfgridnet")
+EMBEDDING_MODEL_IDS = ("resemblyzer", "tfgridnet", "beamformer_resemblyzer")
 
 _MODEL_MODULES: dict[str, str] = {
     "resemblyzer": ".ResemblyzerSpeakerEmbeddingModel",
     "tfgridnet": ".TFGridNetSpeakerEmbeddingModel",
+    "beamformer_resemblyzer": ".BeamformerResemblyzerSpeakerEmbeddingModel",
 }
 
 _MODEL_CLASS_NAMES: dict[str, str] = {
     "resemblyzer": "ResemblyzerSpeakerEmbeddingModel",
     "tfgridnet": "TFGridNetSpeakerEmbeddingModel",
+    "beamformer_resemblyzer": "BeamformerResemblyzerSpeakerEmbeddingModel",
 }
 
 
