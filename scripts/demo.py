@@ -181,10 +181,11 @@ class DemoApp:
             "name":               "Name",
             "decrease_gain":      "Gain↓",
             "increase_gain":      "Gain↑",
+            "reset_lstm":         "LSTM Reset",
             "quit":               "Quit",
             "esc":                "Quit",
         }
-        _cmd_to_keys: dict[str, list[str]] = {}
+        _cmd_to_keys: dict[str, list[str]] = {"reset_lstm": ["R"]}
         for _k, _cmd in self._config.controller.bindings.items():
             _cmd_to_keys.setdefault(_cmd, []).append(_k)
 
@@ -259,6 +260,12 @@ class DemoApp:
         # Ctrl+C always quits regardless of bindings
         if ch == "\x03":
             self.running = False
+            return
+
+        # Direct keybinds (not routed through controller config)
+        if ch in ("r", "R"):
+            self.engine.reset_lstm_states_only()
+            self.status_message = "LSTM states reset"
             return
 
         command = self._config.controller.bindings.get(ch)

@@ -96,8 +96,9 @@ class RealtimeInference:
             self._name_detection_model_path = config.name_detection.model_path
         self._name_detection_grace_period_s = 1.0
 
-        # For input level monitoring
+        # For input/output level monitoring
         self.recent_input_level = 0.0
+        self.recent_output_level = 0.0
         self.input_level_lock = threading.Lock()
 
         # Set up device
@@ -254,6 +255,21 @@ class RealtimeInference:
 
     def _play_transparency_sound_async(self) -> None:
         threading.Thread(target=self._play_transparency_sound, daemon=True).start()
+
+    def reset_lstm_states_only(self) -> None:
+        """Reset only inter-frame LSTM h0/c0 across all GridNet blocks.
+
+        Preserves attention K/V buffers, conv_buf, deconv_buf, and istft_buf.
+        Use this to flush poisoned LSTM state after head orientation changes
+        without losing overlap-add continuity.
+        """
+        if self.state is not None and 'gridnet_bufs' in self.state:
+            for key in self.state['gridnet_bufs']:
+                buf = self.state['gridnet_bufs'][key]
+                if 'h0' in buf:
+                    buf['h0'].zero_()
+                if 'c0' in buf:
+                    buf['c0'].zero_()
 
     def _reset_runtime_context(self) -> None:
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
@@ -517,6 +533,9 @@ class RealtimeInference:
         output_audio = output_audio * self.output_gain
         output_audio = np.clip(output_audio, -1.0, 1.0)
 
+        with self.input_level_lock:
+            self.recent_output_level = np.abs(output_audio).max()
+
         t_done = time.perf_counter()
 
         # Save debug files
@@ -744,7 +763,20 @@ class RealtimeInference:
         rtf = avg_time / chunk_duration
         with self.input_level_lock:
             level = self.recent_input_level
+            out_level = self.recent_output_level
         level_db = float(20 * np.log10(level + 1e-10))
+        out_level_db = float(20 * np.log10(out_level + 1e-10))
+
+        # LSTM state norms as diagnostic for state poisoning
+        lstm_state_norms = {}
+        if self.state is not None and 'gridnet_bufs' in self.state:
+            for key in self.state['gridnet_bufs']:
+                buf = self.state['gridnet_bufs'][key]
+                if 'h0' in buf:
+                    lstm_state_norms[f"{key}_h0_norm"] = round(float(buf['h0'].norm().item()), 4)
+                if 'c0' in buf:
+                    lstm_state_norms[f"{key}_c0_norm"] = round(float(buf['c0'].norm().item()), 4)
+
         return {
             "type": "snapshot",
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -761,6 +793,9 @@ class RealtimeInference:
             "drops_output": self.drops_output,
             "underruns": self.underruns,
             "rms_db": round(level_db, 2),
+            "output_rms_db": round(out_level_db, 2),
+            "io_energy_ratio_db": round(out_level_db - level_db, 2),
+            **lstm_state_norms,
         }
 
     def _snapshot_thread_fn(self) -> None:
