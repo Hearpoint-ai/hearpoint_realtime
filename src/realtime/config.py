@@ -125,6 +125,19 @@ class EnrollmentConfig:
 
 
 @dataclass
+class SpectralSubtractionConfig:
+    """Realtime spectral subtraction post-processing configuration."""
+
+    enabled: bool = False
+    noise_profile_path: Path | None = None
+    sample_rate: int = DEFAULT_SAMPLE_RATE
+    n_fft: int = 512
+    hop_length: int = DEFAULT_CHUNK_SIZE
+    win_length: int = 512
+    alpha: float = 0.95
+
+
+@dataclass
 class Config:
     """Complete configuration for real-time inference."""
 
@@ -137,6 +150,7 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     enrollment: EnrollmentConfig = field(default_factory=EnrollmentConfig)
+    spectral_subtraction: SpectralSubtractionConfig = field(default_factory=SpectralSubtractionConfig)
 
     @classmethod
     def from_yaml(cls, yaml_path: Path | str) -> "Config":
@@ -170,6 +184,7 @@ class Config:
         logging_data = data.get("logging", {}) or {}
         controller_raw = data.get("controller", {}) or {}
         enrollment_data = data.get("enrollment", {}) or {}
+        spectral_data = data.get("spectral_subtraction", {}) or {}
 
         # Load embedding settings from top-level config
         embedding_path = to_path(data.get("embedding"))
@@ -232,6 +247,15 @@ class Config:
             ),
             enrollment=EnrollmentConfig(
                 use_beamformer=enrollment_data.get("use_beamformer", True),
+            ),
+            spectral_subtraction=SpectralSubtractionConfig(
+                enabled=spectral_data.get("enabled", False),
+                noise_profile_path=to_path(spectral_data.get("noise_profile_path")),
+                sample_rate=spectral_data.get("sample_rate", DEFAULT_SAMPLE_RATE),
+                n_fft=spectral_data.get("n_fft", 512),
+                hop_length=spectral_data.get("hop_length", DEFAULT_CHUNK_SIZE),
+                win_length=spectral_data.get("win_length", 512),
+                alpha=spectral_data.get("alpha", 0.95),
             ),
         )
 
