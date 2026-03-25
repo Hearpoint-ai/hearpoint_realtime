@@ -181,11 +181,12 @@ class DemoApp:
             "name":               "Name",
             "decrease_gain":      "Gain↓",
             "increase_gain":      "Gain↑",
-            "reset_lstm":         "Reset State",
+            "reset_lstm":         "LSTM Reset",
+            "reset_full":         "Full Reset",
             "quit":               "Quit",
             "esc":                "Quit",
         }
-        _cmd_to_keys: dict[str, list[str]] = {"reset_lstm": ["R"]}
+        _cmd_to_keys: dict[str, list[str]] = {"reset_lstm": ["R"], "reset_full": ["F"]}
         for _k, _cmd in self._config.controller.bindings.items():
             _cmd_to_keys.setdefault(_cmd, []).append(_k)
 
@@ -264,6 +265,10 @@ class DemoApp:
 
         # Direct keybinds (not routed through controller config)
         if ch in ("r", "R"):
+            self.engine.reset_lstm_states_only()
+            self.status_message = "LSTM states reset"
+            return
+        if ch in ("f", "F"):
             self.engine._reset_runtime_context()
             self.status_message = "Full state reset"
             return
