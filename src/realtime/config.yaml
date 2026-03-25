@@ -31,15 +31,6 @@ name_detection:
 enrollment:
   use_beamformer: true     # e.g. true — beamform binaural audio before embedding (beamformer_resemblyzer); false = plain resemblyzer
 
-spectral_subtraction:
-  enabled: true           # e.g. true — apply spectral subtraction after TFGridNet in isolation mode
-  noise_profile_path: media/noise_captures/noise.wav # e.g. "media/noise_captures/noise_capture.wav" — noise-only WAV used to estimate noise profile
-  sample_rate: 16000       # e.g. 16000 — resample noise profile to this rate for spectral subtraction
-  n_fft: 512               # e.g. 512 — STFT FFT size
-  hop_length: 128          # e.g. 128 — STFT hop size (set to chunk_size for realtime)
-  win_length: 512          # e.g. 512 — STFT window length
-  alpha: 0.95             # e.g. 0.95 — reserved for optional adaptive profile updates
-
 logging:
   enabled: false            # e.g. true — write per-second snapshots + session summary to JSONL
   log_dir: logs/realtime   # e.g. "logs/realtime" — output directory for log files
