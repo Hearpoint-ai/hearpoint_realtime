@@ -181,7 +181,7 @@ class DemoApp:
             "name":               "Name",
             "decrease_gain":      "Gain↓",
             "increase_gain":      "Gain↑",
-            "reset_lstm":         "LSTM Reset",
+            "reset_lstm":         "Reset State",
             "quit":               "Quit",
             "esc":                "Quit",
         }
@@ -264,8 +264,8 @@ class DemoApp:
 
         # Direct keybinds (not routed through controller config)
         if ch in ("r", "R"):
-            self.engine.reset_lstm_states_only()
-            self.status_message = "LSTM states reset"
+            self.engine._reset_runtime_context()
+            self.status_message = "Full state reset"
             return
 
         command = self._config.controller.bindings.get(ch)
