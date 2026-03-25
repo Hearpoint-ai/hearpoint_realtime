@@ -18,6 +18,7 @@ import soundfile as sf
 import torch
 
 from src.models.tfgridnet_realtime.net import Net
+from src.realtime.spectral_subtraction import StreamingSpectralSubtractor
 from src.utils import get_torch_device
 
 from .config import Config, TRANSPARENCY_SOUND_PATH
@@ -103,6 +104,8 @@ class RealtimeInference:
         self.device = torch.device(config.model.device) if config.model.device else get_torch_device()
 
         self._using_coreml = False  # updated by _load_model
+        self._spectral_subtractor: StreamingSpectralSubtractor | None = None
+        self._spectral_sub_enabled = bool(config.spectral_subtraction.enabled)
 
         # Always load model (needed for toggling passthrough→isolation at runtime)
         self._load_model(
@@ -112,6 +115,7 @@ class RealtimeInference:
         )
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
         self.stft_pad_size = self.model.stft_pad_size
+        self._initialize_spectral_subtractor()
 
         # Load speaker embedding if provided (may be None for demo startup)
         if config.model.embedding is not None:
@@ -166,6 +170,55 @@ class RealtimeInference:
         self._total_post_warmup_samples = 0
         self._clipped_post_warmup = 0
 
+    def _initialize_spectral_subtractor(self) -> None:
+        if not self._spectral_sub_enabled:
+            return
+        spec_cfg = self.config.spectral_subtraction
+        noise_profile_path = spec_cfg.noise_profile_path
+        if noise_profile_path is None:
+            print("Warning: spectral subtraction enabled but noise_profile_path is not set. Disabling.")
+            self._spectral_sub_enabled = False
+            return
+        if not noise_profile_path.exists():
+            print(
+                f"Warning: spectral subtraction noise profile not found: {noise_profile_path}. Disabling."
+            )
+            self._spectral_sub_enabled = False
+            return
+
+        try:
+            noise_audio, noise_sr = sf.read(str(noise_profile_path), dtype="float32")
+            target_sr = spec_cfg.sample_rate or self.sample_rate
+            if noise_sr != target_sr:
+                if noise_audio.ndim == 1:
+                    noise_audio = resampy.resample(noise_audio, noise_sr, target_sr)
+                else:
+                    noise_audio = resampy.resample(noise_audio, noise_sr, target_sr, axis=0)
+            if noise_audio.ndim == 1:
+                noise_audio = noise_audio[:, np.newaxis]
+            if noise_audio.shape[1] != self.output_channels:
+                if noise_audio.shape[1] == 1 and self.output_channels == 2:
+                    noise_audio = np.repeat(noise_audio, repeats=2, axis=1)
+                elif noise_audio.shape[1] >= self.output_channels:
+                    noise_audio = noise_audio[:, : self.output_channels]
+                else:
+                    raise ValueError(
+                        f"Noise profile has {noise_audio.shape[1]} channels; expected {self.output_channels}."
+                    )
+
+            self._spectral_subtractor = StreamingSpectralSubtractor(
+                sample_rate=target_sr,
+                n_fft=spec_cfg.n_fft,
+                hop_length=spec_cfg.hop_length,
+                win_length=spec_cfg.win_length,
+                channels=self.output_channels,
+            )
+            self._spectral_subtractor.set_noise_profile(noise_audio)
+        except Exception as e:
+            print(f"Warning: failed to initialize spectral subtraction ({e}). Disabling.")
+            self._spectral_subtractor = None
+            self._spectral_sub_enabled = False
+
     def _make_embedding_tensor(self, embedding_np: np.ndarray) -> torch.Tensor:
         emb = embedding_np.astype(np.float32).reshape(1, 1, -1)
         return torch.from_numpy(emb).to(self.device)
@@ -208,6 +261,8 @@ class RealtimeInference:
         self._drain_thread_queue(self.input_queue)
         self._drain_thread_queue(self.output_queue)
         self._prefill_output_queue_with_silence()
+        if self._spectral_sub_enabled:
+            self._initialize_spectral_subtractor()
 
     def _reset_name_detection_stream(self) -> None:
         if self._name_detection_event is not None:
@@ -446,12 +501,21 @@ class RealtimeInference:
         # --- Post: tensor -> numpy ---
         t_post = time.perf_counter()
         output_audio = output.squeeze(0).cpu().numpy()
-        output_audio *= self.output_gain
-        output_audio = np.clip(output_audio, -1.0, 1.0)
         output_audio = output_audio.T
+
+        if self._spectral_sub_enabled and self._spectral_subtractor is not None:
+            try:
+                output_audio = self._spectral_subtractor.process_chunk(output_audio)
+            except Exception as e:
+                print(f"Warning: spectral subtraction runtime failure ({e}). Disabling.")
+                self._spectral_sub_enabled = False
+                self._spectral_subtractor = None
 
         if self.output_channels == 1:
             output_audio = output_audio.mean(axis=1, keepdims=True)
+
+        output_audio = output_audio * self.output_gain
+        output_audio = np.clip(output_audio, -1.0, 1.0)
 
         t_done = time.perf_counter()
 
@@ -769,6 +833,11 @@ class RealtimeInference:
         """Stop streams, join threads, return stats dict."""
         self.running = False
         self._logging_running = False
+        if self._spectral_sub_enabled and self._spectral_subtractor is not None:
+            try:
+                _ = self._spectral_subtractor.flush()
+            except Exception:
+                pass
         if hasattr(self, "_process_thread"):
             self._process_thread.join(timeout=2.0)
         if hasattr(self, "_snapshot_thread"):
