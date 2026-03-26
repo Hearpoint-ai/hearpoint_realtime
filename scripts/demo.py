@@ -96,6 +96,8 @@ class DemoApp:
         self._name_input_buffer = ""
         self.status_message = "Ready"
         self.running = False
+        self._last_ar_count = 0
+        self._show_gate_debug = False
 
     def _load_speakers(self) -> list[Speaker]:
         speakers, _, _ = self.store.load()
@@ -232,6 +234,27 @@ class DemoApp:
         table.add_row("",        "",                                     _r(4))
         for row_i, (lbl, val) in enumerate(stats):
             table.add_row(lbl, val, _r(5 + row_i))
+
+        # Gate debug rows (toggle with V key)
+        if self._show_gate_debug and hasattr(self.engine, "_ng_diag_energy"):
+            e = self.engine
+            gate_state = e._ng_diag_state.upper()
+            gate_style = (
+                "bold green" if gate_state in ("OPEN", "HOLD")
+                else "bold yellow" if gate_state == "ATTACK"
+                else "bold red"
+            )
+            in_level = e.recent_input_level
+            io_ratio = e._ng_diag_energy / (in_level + 1e-10) if in_level > 0 else 0.0
+            table.add_row("", "", Text(""))
+            table.add_row("OutEnergy", f"{e._ng_diag_energy:.6f}", Text(""))
+            table.add_row("Envelope",  f"{e._ng_diag_envelope:.6f}", Text(""))
+            table.add_row("Threshold", f"{e._ng_threshold:.6f}", Text(""))
+            table.add_row("Gate",      Text(gate_state, style=gate_style), Text(""))
+            table.add_row("GateGain",  f"{e._ng_diag_gain:.2f}", Text(""))
+            table.add_row("InLevel",   f"{in_level:.6f}", Text(""))
+            table.add_row("IO Ratio",  f"{io_ratio:.4f}", Text(""))
+
         table.add_row("",        "",       _r(10))
         table.add_row("",        controls, _r(11))
         table.add_row("",        "",       _r(12) if len(right_col) > 12 else Text(""))
@@ -271,6 +294,10 @@ class DemoApp:
         if ch in ("f", "F"):
             self.engine._reset_runtime_context()
             self.status_message = "Full state reset"
+            return
+        if ch in ("v", "V"):
+            self._show_gate_debug = not self._show_gate_debug
+            self.status_message = f"Gate debug {'ON' if self._show_gate_debug else 'OFF'}"
             return
 
         command = self._config.controller.bindings.get(ch)
@@ -465,6 +492,10 @@ class DemoApp:
             with Live(self._render(), refresh_per_second=5, console=console, screen=True) as live:
                 while self.running:
                     time.sleep(0.2)
+                    ar_count = self.engine._ar_reset_count
+                    if ar_count > self._last_ar_count:
+                        self.status_message = f"[auto-reset] State reset #{ar_count} triggered"
+                        self._last_ar_count = ar_count
                     live.update(self._render())
         except KeyboardInterrupt:
             pass

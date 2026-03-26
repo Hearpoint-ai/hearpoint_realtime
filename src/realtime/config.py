@@ -139,6 +139,29 @@ class SpectralSubtractionConfig:
 
 
 @dataclass
+class AutoResetConfig:
+    """Automatic state poisoning detection and reset configuration."""
+
+    enabled: bool = True
+    input_floor: float = 0.005  # min input level to consider "active audio"
+    ratio_threshold: float = 0.05  # output/input below this = suspected poisoning
+    consecutive_chunks: int = 50  # ~400ms sustained suppression before triggering
+    cooldown_chunks: int = 125  # ~1s cooldown after reset
+
+
+@dataclass
+class NoiseGateConfig:
+    """Post-model noise gate to suppress interferer leakage when target is silent."""
+
+    enabled: bool = False
+    energy_threshold: float = 0.005  # output peak below this → gate closes
+    attack_chunks: int = 2  # ~16ms — ramp up to open
+    hold_chunks: int = 15  # ~120ms — stay open between words
+    release_chunks: int = 10  # ~80ms — ramp down to closed
+    smooth_coeff: float = 0.3  # envelope smoothing (0=instant, 1=frozen)
+
+
+@dataclass
 class Config:
     """Complete configuration for real-time inference."""
 
@@ -152,6 +175,8 @@ class Config:
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     enrollment: EnrollmentConfig = field(default_factory=EnrollmentConfig)
     spectral_subtraction: SpectralSubtractionConfig = field(default_factory=SpectralSubtractionConfig)
+    auto_reset: AutoResetConfig = field(default_factory=AutoResetConfig)
+    noise_gate: NoiseGateConfig = field(default_factory=NoiseGateConfig)
 
     @classmethod
     def from_yaml(cls, yaml_path: Path | str) -> "Config":
@@ -186,6 +211,8 @@ class Config:
         controller_raw = data.get("controller", {}) or {}
         enrollment_data = data.get("enrollment", {}) or {}
         spectral_data = data.get("spectral_subtraction", {}) or {}
+        auto_reset_data = data.get("auto_reset", {}) or {}
+        noise_gate_data = data.get("noise_gate", {}) or {}
 
         # Load embedding settings from top-level config
         embedding_path = to_path(data.get("embedding"))
@@ -258,6 +285,21 @@ class Config:
                 hop_length=spectral_data.get("hop_length", DEFAULT_CHUNK_SIZE),
                 win_length=spectral_data.get("win_length", 512),
                 alpha=spectral_data.get("alpha", 0.95),
+            ),
+            auto_reset=AutoResetConfig(
+                enabled=auto_reset_data.get("enabled", True),
+                input_floor=auto_reset_data.get("input_floor", 0.005),
+                ratio_threshold=auto_reset_data.get("ratio_threshold", 0.05),
+                consecutive_chunks=auto_reset_data.get("consecutive_chunks", 50),
+                cooldown_chunks=auto_reset_data.get("cooldown_chunks", 125),
+            ),
+            noise_gate=NoiseGateConfig(
+                enabled=noise_gate_data.get("enabled", False),
+                energy_threshold=noise_gate_data.get("energy_threshold", 0.005),
+                attack_chunks=noise_gate_data.get("attack_chunks", 2),
+                hold_chunks=noise_gate_data.get("hold_chunks", 15),
+                release_chunks=noise_gate_data.get("release_chunks", 10),
+                smooth_coeff=noise_gate_data.get("smooth_coeff", 0.3),
             ),
         )
 
