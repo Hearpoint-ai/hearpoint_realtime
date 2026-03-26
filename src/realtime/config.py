@@ -59,6 +59,7 @@ class AudioConfig:
     output_channels: int | None = 2
     buffer_size_chunks: int = 4
     output_gain: float = 1.0  # linear multiplier applied to output audio
+    input_gain: float = 1.0  # linear multiplier applied to input audio before model inference
 
 
 @dataclass
@@ -212,6 +213,7 @@ class Config:
                 output_channels=audio_data.get("output_channels", 2),
                 buffer_size_chunks=audio_data.get("buffer_size_chunks", 4),
                 output_gain=audio_data.get("output_gain", 1.0),
+                input_gain=audio_data.get("input_gain", 1.0),
             ),
             debug=DebugConfig(
                 verbose=debug_data.get("verbose", False),

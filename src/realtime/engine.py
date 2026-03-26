@@ -54,6 +54,7 @@ class RealtimeInference:
         self.output_device = config.audio.output_device
         self.buffer_size_chunks = config.audio.buffer_size_chunks
         self.output_gain = config.audio.output_gain
+        self.input_gain = config.audio.input_gain
 
         # Validate device indices if explicitly set
         self._validate_device(self.input_device, "input")
@@ -484,6 +485,8 @@ class RealtimeInference:
         # --- Prep: numpy -> tensor ---
         t_prep = time.perf_counter()
         audio_chunk = _ensure_stereo(audio_chunk)  # normalise to [chunk_size, 2]
+        if self.input_gain != 1.0:
+            audio_chunk = audio_chunk * self.input_gain
         stereo_input = audio_chunk.T
         self._input_buffer.copy_(torch.from_numpy(stereo_input).unsqueeze(0))
 
