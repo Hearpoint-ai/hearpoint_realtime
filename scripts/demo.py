@@ -96,6 +96,7 @@ class DemoApp:
         self._name_input_buffer = ""
         self.status_message = "Ready"
         self.running = False
+        self._last_auto_reset_count = 0
 
     def _load_speakers(self) -> list[Speaker]:
         speakers, _, _ = self.store.load()
@@ -158,6 +159,25 @@ class DemoApp:
             avg = np.mean(recent_ms)
             rtf = avg / chunk_ms
             p95 = np.percentile(recent_ms, 95)
+            ar_diag = self.engine._auto_reset.get_diagnostics()
+            ar_state = ar_diag["auto_reset_state"]
+            ar_ratio = ar_diag["auto_reset_ema_io_ratio_db"]
+            ar_input = ar_diag["auto_reset_ema_input_db"]
+            ar_resets = ar_diag["auto_reset_total_resets"]
+            ar_degraded = ar_diag["auto_reset_chunks_degraded"]
+            ar_cooldown = ar_diag["auto_reset_cooldown_remaining"]
+
+            # Color the state
+            _ar_colors = {"LEARNING": "yellow", "TRACKING": "green", "DEGRADED": "bold red"}
+            ar_style = _ar_colors.get(ar_state, "white")
+            ar_text = Text()
+            ar_text.append(ar_state, style=ar_style)
+            ar_text.append(f" | IO:{ar_ratio:+.1f}dB | resets:{ar_resets}")
+
+            with self.engine.input_level_lock:
+                out_level = self.engine.recent_output_level
+            out_db = 20 * np.log10(out_level + 1e-10)
+
             stats = [
                 ("RTF",      f"{rtf:.3f}"),
                 ("Latency",  f"{avg:.1f}ms avg"),
@@ -166,7 +186,17 @@ class DemoApp:
                 ("Drops",    f"{self.engine.drops_input}/{self.engine.drops_output}"),
                 ("Underruns",str(self.engine.underruns)),
             ]
+
+            if self._config.debug.verbose:
+                stats.extend([
+                    ("Out Level", f"{out_db:+.1f} dB"),
+                    ("IO Ratio",  f"{ar_ratio:+.1f} dB (EMA)"),
+                    ("In EMA",    f"{ar_input:+.1f} dB"),
+                    ("Degraded",  f"{ar_degraded} chunks"),
+                    ("Cooldown",  f"{ar_cooldown} chunks remaining"),
+                ])
         else:
+            ar_text = Text("—")
             stats = [
                 ("RTF",      "—"), ("Latency",  "—"), ("Chunks",   "0"),
                 ("p95",      "—"), ("Drops",    "0/0"), ("Underruns","0"),
@@ -215,6 +245,12 @@ class DemoApp:
                 _cells.append(Text(""))
             controls.add_row(*_cells)
 
+        # Check if auto-reset fired since last frame
+        cur_count = self.engine.auto_reset_count
+        if cur_count > self._last_auto_reset_count:
+            self._last_auto_reset_count = cur_count
+            self.status_message = f"Auto-reset fired (#{cur_count})"
+
         if self.naming:
             status_text = Text(f"Enter name: {self._name_input_buffer}_", style="bold yellow")
         elif self.enrolling and self.enroll_start_time is not None:
@@ -225,16 +261,18 @@ class DemoApp:
             status_text = Text(f"Status: {self.status_message}")
 
         # Row layout (right column index in parens)
-        table.add_row("Mode",    mode_text,                              _r(0))
-        table.add_row("Speaker", self.current_speaker or "(none enrolled)", _r(1))
-        table.add_row("Level",   meter,                                  _r(2))
-        table.add_row("Gain",    f"{self.engine.output_gain:.1f}x",     _r(3))
-        table.add_row("",        "",                                     _r(4))
-        for row_i, (lbl, val) in enumerate(stats):
-            table.add_row(lbl, val, _r(5 + row_i))
-        table.add_row("",        "",       _r(10))
-        table.add_row("",        controls, _r(11))
-        table.add_row("",        "",       _r(12) if len(right_col) > 12 else Text(""))
+        ri = 0  # right column index
+        table.add_row("Mode",    mode_text,                              _r(ri)); ri += 1
+        table.add_row("Speaker", self.current_speaker or "(none enrolled)", _r(ri)); ri += 1
+        table.add_row("Level",   meter,                                  _r(ri)); ri += 1
+        table.add_row("Gain",    f"{self.engine.output_gain:.1f}x",     _r(ri)); ri += 1
+        table.add_row("",        "",                                     _r(ri)); ri += 1
+        for lbl, val in stats:
+            table.add_row(lbl, val, _r(ri)); ri += 1
+        table.add_row("AutoReset", ar_text, _r(ri)); ri += 1
+        table.add_row("",        "",       _r(ri)); ri += 1
+        table.add_row("",        controls, _r(ri)); ri += 1
+        table.add_row("",        "",       _r(ri)); ri += 1
         table.add_row("",        status_text, Text(""))
 
         title = Text(" HearPoint AI ", style="bold bright_cyan reverse")

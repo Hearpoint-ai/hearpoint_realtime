@@ -1,75 +1,43 @@
 {
   "speakers": [
     {
-      "id": "7e2d64a3-6a1e-42bf-b52d-4b8986ea11a3",
-      "name": "himanshu_no_beam",
-      "created_at": "2026-03-24T21:07:41.362354+00:00",
-      "embedding_path": "enrollments/7e2d64a3-6a1e-42bf-b52d-4b8986ea11a3.npy",
-      "enrollment_audio_path": "enrollments/7e2d64a3-6a1e-42bf-b52d-4b8986ea11a3.wav",
+      "id": "926f8c27-5869-4cd6-bca0-1c22e45e38e4",
+      "name": "Speaker 22:04:03",
+      "created_at": "2026-03-26T02:04:03.274503+00:00",
+      "embedding_path": "enrollments/926f8c27-5869-4cd6-bca0-1c22e45e38e4.npy",
+      "enrollment_audio_path": "enrollments/926f8c27-5869-4cd6-bca0-1c22e45e38e4.wav",
       "processing_ms": null
     },
     {
-      "id": "a0c24f95-9248-4689-b89f-45a25ba85fac",
-      "name": "Himanshu_beam",
-      "created_at": "2026-03-24T21:10:39.947029+00:00",
-      "embedding_path": "enrollments/a0c24f95-9248-4689-b89f-45a25ba85fac.npy",
-      "enrollment_audio_path": "enrollments/a0c24f95-9248-4689-b89f-45a25ba85fac.wav",
+      "id": "b2964e98-e8ca-4c61-a534-b554ac8c2155",
+      "name": "Speaker 22:34:04",
+      "created_at": "2026-03-26T02:34:04.293758+00:00",
+      "embedding_path": "enrollments/b2964e98-e8ca-4c61-a534-b554ac8c2155.npy",
+      "enrollment_audio_path": "enrollments/b2964e98-e8ca-4c61-a534-b554ac8c2155.wav",
       "processing_ms": null
     },
     {
-      "id": "1ab85189-9e88-4afc-bddb-a43b869e6886",
-      "name": "Derron_beam",
-      "created_at": "2026-03-24T21:13:13.138243+00:00",
-      "embedding_path": "enrollments/1ab85189-9e88-4afc-bddb-a43b869e6886.npy",
-      "enrollment_audio_path": "enrollments/1ab85189-9e88-4afc-bddb-a43b869e6886.wav",
+      "id": "d4cc8a12-a0c8-4803-a0d8-a4c51046962d",
+      "name": "Speaker 22:42:19",
+      "created_at": "2026-03-26T02:42:19.761586+00:00",
+      "embedding_path": "enrollments/d4cc8a12-a0c8-4803-a0d8-a4c51046962d.npy",
+      "enrollment_audio_path": "enrollments/d4cc8a12-a0c8-4803-a0d8-a4c51046962d.wav",
       "processing_ms": null
     },
     {
-      "id": "c3442c36-718c-4416-8c35-79259164bd6f",
-      "name": "Derron_no_beam",
-      "created_at": "2026-03-24T21:14:18.041160+00:00",
-      "embedding_path": "enrollments/c3442c36-718c-4416-8c35-79259164bd6f.npy",
-      "enrollment_audio_path": "enrollments/c3442c36-718c-4416-8c35-79259164bd6f.wav",
+      "id": "c083a63e-05d8-4f7b-9fb1-440f0442cc45",
+      "name": "Speaker 22:47:58",
+      "created_at": "2026-03-26T02:47:58.676243+00:00",
+      "embedding_path": "enrollments/c083a63e-05d8-4f7b-9fb1-440f0442cc45.npy",
+      "enrollment_audio_path": "enrollments/c083a63e-05d8-4f7b-9fb1-440f0442cc45.wav",
       "processing_ms": null
     },
     {
-      "id": "1813ef23-9df2-4328-bf36-38e042d81e77",
-      "name": "Speaker 17:22:10",
-      "created_at": "2026-03-24T21:22:10.530687+00:00",
-      "embedding_path": "enrollments/1813ef23-9df2-4328-bf36-38e042d81e77.npy",
-      "enrollment_audio_path": "enrollments/1813ef23-9df2-4328-bf36-38e042d81e77.wav",
-      "processing_ms": null
-    },
-    {
-      "id": "97836608-77a7-4c84-bb75-0d8e9bfcbed6",
-      "name": "him_had_beam",
-      "created_at": "2026-03-24T22:04:00.916618+00:00",
-      "embedding_path": "enrollments/97836608-77a7-4c84-bb75-0d8e9bfcbed6.npy",
-      "enrollment_audio_path": "enrollments/97836608-77a7-4c84-bb75-0d8e9bfcbed6.wav",
-      "processing_ms": null
-    },
-    {
-      "id": "0739bd3d-fdb9-40f7-ada7-8c23e4da0b3f",
-      "name": "Speaker 18:05:56",
-      "created_at": "2026-03-24T22:05:56.701301+00:00",
-      "embedding_path": "enrollments/0739bd3d-fdb9-40f7-ada7-8c23e4da0b3f.npy",
-      "enrollment_audio_path": "enrollments/0739bd3d-fdb9-40f7-ada7-8c23e4da0b3f.wav",
-      "processing_ms": null
-    },
-    {
-      "id": "b64a95d7-02e4-4be5-80e8-d32e53b4c9ee",
-      "name": "Him_no_beam",
-      "created_at": "2026-03-24T22:13:22.300110+00:00",
-      "embedding_path": "enrollments/b64a95d7-02e4-4be5-80e8-d32e53b4c9ee.npy",
-      "enrollment_audio_path": "enrollments/b64a95d7-02e4-4be5-80e8-d32e53b4c9ee.wav",
-      "processing_ms": null
-    },
-    {
-      "id": "d5271a95-9b79-4286-a57b-71ac27f46dd0",
-      "name": "him_beam",
-      "created_at": "2026-03-24T22:14:15.424474+00:00",
-      "embedding_path": "enrollments/d5271a95-9b79-4286-a57b-71ac27f46dd0.npy",
-      "enrollment_audio_path": "enrollments/d5271a95-9b79-4286-a57b-71ac27f46dd0.wav",
+      "id": "a9548487-eed8-4185-bf80-4886edfa2fc6",
+      "name": "Speaker 22:58:32",
+      "created_at": "2026-03-26T02:58:32.677754+00:00",
+      "embedding_path": "enrollments/a9548487-eed8-4185-bf80-4886edfa2fc6.npy",
+      "enrollment_audio_path": "enrollments/a9548487-eed8-4185-bf80-4886edfa2fc6.wav",
       "processing_ms": null
     }
   ],

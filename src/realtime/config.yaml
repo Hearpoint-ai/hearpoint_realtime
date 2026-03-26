@@ -6,15 +6,15 @@ embedding_model: resemblyzer  # resemblyzer | tfgridnet — model used for enrol
 audio:
   sample_rate: 16000       # e.g. 16000 — Hz
   chunk_size: 128          # e.g. 128 — samples per processing chunk
-  input_device: null       # e.g. 1 — device index (run --list-devices); null = system default
-  output_device: null      # e.g. 2 — device index; null = system default
+  input_device: 3       # e.g. 1 — device index (run --list-devices); null = system default
+  output_device: 0      # e.g. 2 — device index; null = system default
   input_channels: 2        # e.g. 2 — 1 for mono mic, 2 for stereo
   output_channels: 2       # e.g. 2 — null = auto-detect
   buffer_size_chunks: 4    # e.g. 4 — input buffer depth; higher = more stable, more latency
   output_gain: 3.0         # e.g. 1.0 — multiplier; 1.0 = unity, 2.0 = +6dB
 
 debug:
-  verbose: false           # e.g. true — prints input/output stats per chunk
+  verbose: true            # e.g. true — shows extra auto-reset diagnostics in demo UI
   passthrough: false       # e.g. true — bypasses model, passes audio through unchanged
   save_dir: null           # e.g. "./debug_audio/" — saves debug_input.wav + debug_output.wav; null = disabled
 
@@ -40,8 +40,20 @@ spectral_subtraction:
   win_length: 512          # e.g. 512 — STFT window length
   alpha: 0.95             # e.g. 0.95 — reserved for optional adaptive profile updates
 
+auto_reset:
+  enabled: true                          # e.g. true — auto-reset model state when head-turn recovery detected
+  dry_run: false                         # e.g. false — when true, logs state transitions but never fires resets
+  input_activity_threshold_db: -50.0     # e.g. -50.0 — RMS below this = silence, skip transitions
+  degraded_ratio_threshold_db: -20.0     # e.g. -20.0 — IO ratio (RMS) below this = model degraded
+  recovery_ratio_threshold_db: -15.0     # e.g. -15.0 — IO ratio (RMS) above this after degraded = fire reset
+  degraded_confirm_ms: 2000.0            # e.g. 2000.0 — must stay degraded this long before arming
+  recovery_confirm_ms: 1000.0            # e.g. 1000.0 — must stay above recovery threshold this long before firing
+  learning_period_ms: 3000.0             # e.g. 3000.0 — no resets for this long after embedding set / last reset
+  cooldown_ms: 3000.0                    # e.g. 3000.0 — minimum time between auto-resets
+  ema_tau_ms: 1000.0                     # e.g. 1000.0 — EMA time constant for smoothing IO ratio (RMS-based)
+
 logging:
-  enabled: false            # e.g. true — write per-second snapshots + session summary to JSONL
+  enabled: true            # e.g. true — write per-second snapshots + session summary to JSONL
   log_dir: logs/realtime   # e.g. "logs/realtime" — output directory for log files
 
 test:

@@ -138,6 +138,22 @@ class SpectralSubtractionConfig:
 
 
 @dataclass
+class AutoResetConfig:
+    """Automatic state reset detection configuration."""
+
+    enabled: bool = True
+    dry_run: bool = False
+    input_activity_threshold_db: float = -50.0
+    degraded_ratio_threshold_db: float = -20.0
+    recovery_ratio_threshold_db: float = -3.0
+    degraded_confirm_ms: float = 2000.0
+    recovery_confirm_ms: float = 2000.0
+    learning_period_ms: float = 3000.0
+    cooldown_ms: float = 3000.0
+    ema_tau_ms: float = 1000.0
+
+
+@dataclass
 class Config:
     """Complete configuration for real-time inference."""
 
@@ -151,6 +167,7 @@ class Config:
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     enrollment: EnrollmentConfig = field(default_factory=EnrollmentConfig)
     spectral_subtraction: SpectralSubtractionConfig = field(default_factory=SpectralSubtractionConfig)
+    auto_reset: AutoResetConfig = field(default_factory=AutoResetConfig)
 
     @classmethod
     def from_yaml(cls, yaml_path: Path | str) -> "Config":
@@ -185,6 +202,7 @@ class Config:
         controller_raw = data.get("controller", {}) or {}
         enrollment_data = data.get("enrollment", {}) or {}
         spectral_data = data.get("spectral_subtraction", {}) or {}
+        auto_reset_data = data.get("auto_reset", {}) or {}
 
         # Load embedding settings from top-level config
         embedding_path = to_path(data.get("embedding"))
@@ -256,6 +274,18 @@ class Config:
                 hop_length=spectral_data.get("hop_length", DEFAULT_CHUNK_SIZE),
                 win_length=spectral_data.get("win_length", 512),
                 alpha=spectral_data.get("alpha", 0.95),
+            ),
+            auto_reset=AutoResetConfig(
+                enabled=auto_reset_data.get("enabled", True),
+                dry_run=auto_reset_data.get("dry_run", False),
+                input_activity_threshold_db=auto_reset_data.get("input_activity_threshold_db", -40.0),
+                degraded_ratio_threshold_db=auto_reset_data.get("degraded_ratio_threshold_db", -15.0),
+                recovery_ratio_threshold_db=auto_reset_data.get("recovery_ratio_threshold_db", -3.0),
+                degraded_confirm_ms=auto_reset_data.get("degraded_confirm_ms", 2000.0),
+                recovery_confirm_ms=auto_reset_data.get("recovery_confirm_ms", 2000.0),
+                learning_period_ms=auto_reset_data.get("learning_period_ms", 2000.0),
+                cooldown_ms=auto_reset_data.get("cooldown_ms", 3000.0),
+                ema_tau_ms=auto_reset_data.get("ema_tau_ms", 1000.0),
             ),
         )
 

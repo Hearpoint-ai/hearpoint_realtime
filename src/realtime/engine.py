@@ -18,6 +18,7 @@ import soundfile as sf
 import torch
 
 from src.models.tfgridnet_realtime.net import Net
+from src.realtime.auto_reset import AutoResetDetector
 from src.realtime.spectral_subtraction import StreamingSpectralSubtractor
 from src.utils import get_torch_device
 
@@ -117,6 +118,24 @@ class RealtimeInference:
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
         self.stft_pad_size = self.model.stft_pad_size
         self._initialize_spectral_subtractor()
+
+        # Auto-reset detector
+        self.auto_reset_count = 0  # incremented each time auto-reset fires
+        chunk_ms = self.chunk_size / self.sample_rate * 1000
+        ar = config.auto_reset
+        self._auto_reset = AutoResetDetector(
+            enabled=ar.enabled,
+            dry_run=ar.dry_run,
+            chunk_duration_ms=chunk_ms,
+            input_activity_threshold_db=ar.input_activity_threshold_db,
+            degraded_ratio_threshold_db=ar.degraded_ratio_threshold_db,
+            recovery_ratio_threshold_db=ar.recovery_ratio_threshold_db,
+            degraded_confirm_ms=ar.degraded_confirm_ms,
+            recovery_confirm_ms=ar.recovery_confirm_ms,
+            learning_period_ms=ar.learning_period_ms,
+            cooldown_ms=ar.cooldown_ms,
+            ema_tau_ms=ar.ema_tau_ms,
+        )
 
         # Load speaker embedding if provided (may be None for demo startup)
         if config.model.embedding is not None:
@@ -279,6 +298,7 @@ class RealtimeInference:
         self._prefill_output_queue_with_silence()
         if self._spectral_sub_enabled:
             self._initialize_spectral_subtractor()
+        self._auto_reset.reset()
 
     def _reset_name_detection_stream(self) -> None:
         if self._name_detection_event is not None:
@@ -534,7 +554,21 @@ class RealtimeInference:
         output_audio = np.clip(output_audio, -1.0, 1.0)
 
         with self.input_level_lock:
-            self.recent_output_level = np.abs(output_audio).max()
+            output_peak = np.abs(output_audio).max()
+            self.recent_output_level = output_peak
+
+        # Auto-reset uses RMS (not peak) for stability — peak is too noisy on 8ms chunks
+        input_rms = float(np.sqrt(np.mean(audio_chunk.astype(np.float64) ** 2)))
+        output_rms = float(np.sqrt(np.mean(output_audio.astype(np.float64) ** 2)))
+        if self._auto_reset.update(input_rms, output_rms):
+            self._reset_runtime_context()
+            self.auto_reset_count += 1
+            if self._logger:
+                self._logger.log({
+                    "type": "auto_reset",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "chunk": self.chunks_processed,
+                })
 
         t_done = time.perf_counter()
 
@@ -796,6 +830,7 @@ class RealtimeInference:
             "output_rms_db": round(out_level_db, 2),
             "io_energy_ratio_db": round(out_level_db - level_db, 2),
             **lstm_state_norms,
+            **self._auto_reset.get_diagnostics(),
         }
 
     def _snapshot_thread_fn(self) -> None:
