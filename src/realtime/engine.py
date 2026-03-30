@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 import multiprocessing
 import queue
 import socket
@@ -84,6 +85,10 @@ class RealtimeInference:
         self._ar_suspect_count = 0
         self._ar_cooldown_remaining = 0
         self._ar_reset_count = 0
+        # Output activity tracking — only suspect poisoning if model was recently active
+        self._ar_activity_threshold = config.auto_reset.activity_threshold
+        self._ar_window_buffer: deque[bool] = deque(maxlen=config.auto_reset.activity_window_chunks)
+        self._ar_recent_active_count = 0
 
         # Validate device indices if explicitly set
         self._validate_device(self.input_device, "input")
@@ -286,20 +291,6 @@ class RealtimeInference:
     def _play_transparency_sound_async(self) -> None:
         threading.Thread(target=self._play_transparency_sound, daemon=True).start()
 
-    def reset_lstm_states_only(self) -> None:
-        """Reset only inter-frame LSTM h0/c0 across all GridNet blocks.
-
-        Preserves attention K/V buffers, conv_buf, deconv_buf, and istft_buf.
-        Use this to flush poisoned LSTM state after head orientation changes
-        without losing overlap-add continuity.
-        """
-        if self.state is not None and 'gridnet_bufs' in self.state:
-            for key in self.state['gridnet_bufs']:
-                buf = self.state['gridnet_bufs'][key]
-                if 'h0' in buf:
-                    buf['h0'].zero_()
-                if 'c0' in buf:
-                    buf['c0'].zero_()
 
     def _apply_noise_gate(self, output_audio: np.ndarray) -> None:
         """Apply noise gate to suppress interferer leakage. Modifies output_audio in-place."""
@@ -369,11 +360,25 @@ class RealtimeInference:
             self._ar_cooldown_remaining -= 1
             return
 
+        # Track output activity in a sliding window
+        ratio = output_level / (input_level + 1e-10)
+        is_active = ratio >= self._ar_activity_threshold and input_level >= self._ar_input_floor
+        if len(self._ar_window_buffer) == self._ar_window_buffer.maxlen:
+            removed = self._ar_window_buffer[0]
+            if removed:
+                self._ar_recent_active_count -= 1
+        self._ar_window_buffer.append(is_active)
+        if is_active:
+            self._ar_recent_active_count += 1
+
         if input_level < self._ar_input_floor:
             self._ar_suspect_count = 0
             return
 
-        ratio = output_level / (input_level + 1e-10)
+        # Only suspect poisoning if model was recently producing output
+        if self._ar_recent_active_count == 0:
+            self._ar_suspect_count = 0
+            return
 
         if ratio < self._ar_ratio_threshold:
             self._ar_suspect_count += 1
@@ -403,6 +408,10 @@ class RealtimeInference:
         self._ng_hold_counter = 0
         self._ng_attack_counter = 0
         self._ng_release_counter = 0
+        # Reset auto-reset activity tracking
+        self._ar_window_buffer.clear()
+        self._ar_recent_active_count = 0
+        self._ar_suspect_count = 0
 
     def _reset_name_detection_stream(self) -> None:
         if self._name_detection_event is not None:

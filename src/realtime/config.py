@@ -143,10 +143,12 @@ class AutoResetConfig:
     """Automatic state poisoning detection and reset configuration."""
 
     enabled: bool = True
-    input_floor: float = 0.005  # min input level to consider "active audio"
+    input_floor: float = 0.01  # min input level to consider "active audio"
     ratio_threshold: float = 0.05  # output/input below this = suspected poisoning
-    consecutive_chunks: int = 50  # ~400ms sustained suppression before triggering
+    consecutive_chunks: int = 100  # ~800ms sustained suppression before triggering
     cooldown_chunks: int = 125  # ~1s cooldown after reset
+    activity_window_chunks: int = 375  # ~3s lookback for recent output activity
+    activity_threshold: float = 0.15  # output/input ratio above this = "model was active"
 
 
 @dataclass
@@ -288,10 +290,12 @@ class Config:
             ),
             auto_reset=AutoResetConfig(
                 enabled=auto_reset_data.get("enabled", True),
-                input_floor=auto_reset_data.get("input_floor", 0.005),
+                input_floor=auto_reset_data.get("input_floor", 0.01),
                 ratio_threshold=auto_reset_data.get("ratio_threshold", 0.05),
-                consecutive_chunks=auto_reset_data.get("consecutive_chunks", 50),
+                consecutive_chunks=auto_reset_data.get("consecutive_chunks", 100),
                 cooldown_chunks=auto_reset_data.get("cooldown_chunks", 125),
+                activity_window_chunks=auto_reset_data.get("activity_window_chunks", 375),
+                activity_threshold=auto_reset_data.get("activity_threshold", 0.15),
             ),
             noise_gate=NoiseGateConfig(
                 enabled=noise_gate_data.get("enabled", False),

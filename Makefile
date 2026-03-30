@@ -1,6 +1,6 @@
-.PHONY: eval-fast eval-live make-fixture enroll enroll-record demo tests list-devices
+.PHONY: eval-fast eval-live make-fixture enroll enroll-record demo tests list-devices wipe-data
 
-PYTHON ?= /opt/miniconda3/envs/hearpoint-realtime/bin/python
+PYTHON ?= /opt/homebrew/anaconda3/envs/hearpoint-realtime/bin/python
 NAME ?= User
 AUDIO ?= media/enrollments/sample.wav
 DURATION ?= 10
@@ -39,3 +39,8 @@ tests:
 
 list-devices:
 	$(PYTHON) src/realtime/realtime_inference.py --list-devices
+
+wipe-data:
+	rm -f media/enrollments/*.wav media/enrollments/*.npy media/enrollments/*.meta.json
+	echo '{"speakers": [], "recordings": [], "extractions": []}' > media/data.json
+	@echo "Wiped all enrolled speakers and reset data.json."
