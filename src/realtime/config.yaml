@@ -12,6 +12,7 @@ audio:
   output_channels: 2       # e.g. 2 — null = auto-detect
   buffer_size_chunks: 4    # e.g. 4 — input buffer depth; higher = more stable, more latency
   output_gain: 3.0         # e.g. 1.0 — multiplier; 1.0 = unity, 2.0 = +6dB
+  input_gain: 4.0          # e.g. 1.0 — multiplier applied to input audio before model inference
 
 debug:
   verbose: false           # e.g. true — prints input/output stats per chunk
@@ -29,7 +30,7 @@ name_detection:
   target_word: toggle      # e.g. "derron" — spoken word that triggers toggle
 
 enrollment:
-  use_beamformer: true     # e.g. true — beamform binaural audio before embedding (beamformer_resemblyzer); false = plain resemblyzer
+  use_beamformer: false     # e.g. true — beamform binaural audio before embedding (beamformer_resemblyzer); false = plain resemblyzer
 
 spectral_subtraction:
   enabled: true           # e.g. true — apply spectral subtraction after TFGridNet in isolation mode
@@ -39,6 +40,23 @@ spectral_subtraction:
   hop_length: 128          # e.g. 128 — STFT hop size (set to chunk_size for realtime)
   win_length: 512          # e.g. 512 — STFT window length
   alpha: 0.95             # e.g. 0.95 — reserved for optional adaptive profile updates
+
+auto_reset:
+  enabled: true
+  input_floor: 0.01           # min input level to consider "active audio"
+  ratio_threshold: 0.1        # output/input below this = suspected poisoning
+  consecutive_chunks: 100      # ~800ms sustained suppression before triggering
+  cooldown_chunks: 250         # ~2s cooldown after reset
+  activity_window_chunks: 375  # ~3s lookback for recent output activity
+  activity_threshold: 0.15     # output/input ratio above this = "model was active"
+
+noise_gate:
+  enabled: true
+  energy_threshold: 0.005    # output peak below this → gate closes
+  attack_chunks: 2           # ~16ms — ramp up to open
+  hold_chunks: 15            # ~120ms — stay open between words
+  release_chunks: 10         # ~80ms — ramp down to closed
+  smooth_coeff: 0.3          # envelope smoothing (0=instant, 1=frozen)
 
 logging:
   enabled: false            # e.g. true — write per-second snapshots + session summary to JSONL

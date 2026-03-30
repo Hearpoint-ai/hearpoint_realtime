@@ -59,6 +59,7 @@ class AudioConfig:
     output_channels: int | None = 2
     buffer_size_chunks: int = 4
     output_gain: float = 1.0  # linear multiplier applied to output audio
+    input_gain: float = 1.0  # linear multiplier applied to input audio before model inference
 
 
 @dataclass
@@ -138,6 +139,31 @@ class SpectralSubtractionConfig:
 
 
 @dataclass
+class AutoResetConfig:
+    """Automatic state poisoning detection and reset configuration."""
+
+    enabled: bool = True
+    input_floor: float = 0.01  # min input level to consider "active audio"
+    ratio_threshold: float = 0.05  # output/input below this = suspected poisoning
+    consecutive_chunks: int = 100  # ~800ms sustained suppression before triggering
+    cooldown_chunks: int = 125  # ~1s cooldown after reset
+    activity_window_chunks: int = 375  # ~3s lookback for recent output activity
+    activity_threshold: float = 0.15  # output/input ratio above this = "model was active"
+
+
+@dataclass
+class NoiseGateConfig:
+    """Post-model noise gate to suppress interferer leakage when target is silent."""
+
+    enabled: bool = False
+    energy_threshold: float = 0.005  # output peak below this → gate closes
+    attack_chunks: int = 2  # ~16ms — ramp up to open
+    hold_chunks: int = 15  # ~120ms — stay open between words
+    release_chunks: int = 10  # ~80ms — ramp down to closed
+    smooth_coeff: float = 0.3  # envelope smoothing (0=instant, 1=frozen)
+
+
+@dataclass
 class Config:
     """Complete configuration for real-time inference."""
 
@@ -151,6 +177,8 @@ class Config:
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     enrollment: EnrollmentConfig = field(default_factory=EnrollmentConfig)
     spectral_subtraction: SpectralSubtractionConfig = field(default_factory=SpectralSubtractionConfig)
+    auto_reset: AutoResetConfig = field(default_factory=AutoResetConfig)
+    noise_gate: NoiseGateConfig = field(default_factory=NoiseGateConfig)
 
     @classmethod
     def from_yaml(cls, yaml_path: Path | str) -> "Config":
@@ -185,6 +213,8 @@ class Config:
         controller_raw = data.get("controller", {}) or {}
         enrollment_data = data.get("enrollment", {}) or {}
         spectral_data = data.get("spectral_subtraction", {}) or {}
+        auto_reset_data = data.get("auto_reset", {}) or {}
+        noise_gate_data = data.get("noise_gate", {}) or {}
 
         # Load embedding settings from top-level config
         embedding_path = to_path(data.get("embedding"))
@@ -212,6 +242,7 @@ class Config:
                 output_channels=audio_data.get("output_channels", 2),
                 buffer_size_chunks=audio_data.get("buffer_size_chunks", 4),
                 output_gain=audio_data.get("output_gain", 1.0),
+                input_gain=audio_data.get("input_gain", 1.0),
             ),
             debug=DebugConfig(
                 verbose=debug_data.get("verbose", False),
@@ -256,6 +287,23 @@ class Config:
                 hop_length=spectral_data.get("hop_length", DEFAULT_CHUNK_SIZE),
                 win_length=spectral_data.get("win_length", 512),
                 alpha=spectral_data.get("alpha", 0.95),
+            ),
+            auto_reset=AutoResetConfig(
+                enabled=auto_reset_data.get("enabled", True),
+                input_floor=auto_reset_data.get("input_floor", 0.01),
+                ratio_threshold=auto_reset_data.get("ratio_threshold", 0.05),
+                consecutive_chunks=auto_reset_data.get("consecutive_chunks", 100),
+                cooldown_chunks=auto_reset_data.get("cooldown_chunks", 125),
+                activity_window_chunks=auto_reset_data.get("activity_window_chunks", 375),
+                activity_threshold=auto_reset_data.get("activity_threshold", 0.15),
+            ),
+            noise_gate=NoiseGateConfig(
+                enabled=noise_gate_data.get("enabled", False),
+                energy_threshold=noise_gate_data.get("energy_threshold", 0.005),
+                attack_chunks=noise_gate_data.get("attack_chunks", 2),
+                hold_chunks=noise_gate_data.get("hold_chunks", 15),
+                release_chunks=noise_gate_data.get("release_chunks", 10),
+                smooth_coeff=noise_gate_data.get("smooth_coeff", 0.3),
             ),
         )
 

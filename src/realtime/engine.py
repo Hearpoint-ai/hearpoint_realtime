@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 import multiprocessing
 import queue
 import socket
@@ -54,6 +55,40 @@ class RealtimeInference:
         self.output_device = config.audio.output_device
         self.buffer_size_chunks = config.audio.buffer_size_chunks
         self.output_gain = config.audio.output_gain
+        self.input_gain = config.audio.input_gain
+
+        # Noise gate state
+        self._ng_enabled = config.noise_gate.enabled
+        self._ng_threshold = config.noise_gate.energy_threshold
+        self._ng_attack_chunks = max(1, config.noise_gate.attack_chunks)
+        self._ng_hold_chunks = config.noise_gate.hold_chunks
+        self._ng_release_chunks = max(1, config.noise_gate.release_chunks)
+        self._ng_smooth_coeff = config.noise_gate.smooth_coeff
+        self._ng_envelope = 0.0
+        self._ng_gain = 0.0
+        self._ng_state = "closed"
+        self._ng_hold_counter = 0
+        self._ng_attack_counter = 0
+        self._ng_release_counter = 0
+        # Diagnostics for UI
+        self._ng_diag_energy = 0.0
+        self._ng_diag_envelope = 0.0
+        self._ng_diag_state = "closed"
+        self._ng_diag_gain = 0.0
+
+        # Auto-reset state poisoning detector
+        self._ar_enabled = config.auto_reset.enabled
+        self._ar_input_floor = config.auto_reset.input_floor
+        self._ar_ratio_threshold = config.auto_reset.ratio_threshold
+        self._ar_consecutive_required = config.auto_reset.consecutive_chunks
+        self._ar_cooldown_total = config.auto_reset.cooldown_chunks
+        self._ar_suspect_count = 0
+        self._ar_cooldown_remaining = 0
+        self._ar_reset_count = 0
+        # Output activity tracking — only suspect poisoning if model was recently active
+        self._ar_activity_threshold = config.auto_reset.activity_threshold
+        self._ar_window_buffer: deque[bool] = deque(maxlen=config.auto_reset.activity_window_chunks)
+        self._ar_recent_active_count = 0
 
         # Validate device indices if explicitly set
         self._validate_device(self.input_device, "input")
@@ -96,8 +131,9 @@ class RealtimeInference:
             self._name_detection_model_path = config.name_detection.model_path
         self._name_detection_grace_period_s = 1.0
 
-        # For input level monitoring
+        # For input/output level monitoring
         self.recent_input_level = 0.0
+        self.recent_output_level = 0.0
         self.input_level_lock = threading.Lock()
 
         # Set up device
@@ -255,6 +291,108 @@ class RealtimeInference:
     def _play_transparency_sound_async(self) -> None:
         threading.Thread(target=self._play_transparency_sound, daemon=True).start()
 
+
+    def _apply_noise_gate(self, output_audio: np.ndarray) -> None:
+        """Apply noise gate to suppress interferer leakage. Modifies output_audio in-place."""
+        energy = float(np.abs(output_audio).max())
+        self._ng_envelope = (
+            self._ng_smooth_coeff * self._ng_envelope
+            + (1.0 - self._ng_smooth_coeff) * energy
+        )
+        above = self._ng_envelope >= self._ng_threshold
+
+        if self._ng_state == "closed":
+            if above:
+                self._ng_state = "attack"
+                self._ng_attack_counter = 0
+        elif self._ng_state == "attack":
+            if above:
+                self._ng_attack_counter += 1
+                if self._ng_attack_counter >= self._ng_attack_chunks:
+                    self._ng_state = "open"
+            else:
+                self._ng_state = "closed"
+                self._ng_attack_counter = 0
+        elif self._ng_state == "open":
+            if not above:
+                self._ng_state = "hold"
+                self._ng_hold_counter = self._ng_hold_chunks
+        elif self._ng_state == "hold":
+            if above:
+                self._ng_state = "open"
+            else:
+                self._ng_hold_counter -= 1
+                if self._ng_hold_counter <= 0:
+                    self._ng_state = "release"
+                    self._ng_release_counter = 0
+        elif self._ng_state == "release":
+            if above:
+                self._ng_state = "attack"
+                self._ng_attack_counter = 0
+            else:
+                self._ng_release_counter += 1
+                if self._ng_release_counter >= self._ng_release_chunks:
+                    self._ng_state = "closed"
+
+        if self._ng_state == "closed":
+            self._ng_gain = 0.0
+        elif self._ng_state in ("open", "hold"):
+            self._ng_gain = 1.0
+        elif self._ng_state == "attack":
+            self._ng_gain = self._ng_attack_counter / self._ng_attack_chunks
+        elif self._ng_state == "release":
+            self._ng_gain = 1.0 - (self._ng_release_counter / self._ng_release_chunks)
+
+        output_audio *= self._ng_gain
+
+        # Store diagnostics for UI
+        self._ng_diag_energy = energy
+        self._ng_diag_envelope = self._ng_envelope
+        self._ng_diag_state = self._ng_state
+        self._ng_diag_gain = self._ng_gain
+
+    def _check_auto_reset(self, input_level: float, output_level: float) -> None:
+        """Detect state poisoning and trigger full reset if sustained."""
+        if not self._ar_enabled:
+            return
+
+        if self._ar_cooldown_remaining > 0:
+            self._ar_cooldown_remaining -= 1
+            return
+
+        # Track output activity in a sliding window
+        ratio = output_level / (input_level + 1e-10)
+        is_active = ratio >= self._ar_activity_threshold and input_level >= self._ar_input_floor
+        if len(self._ar_window_buffer) == self._ar_window_buffer.maxlen:
+            removed = self._ar_window_buffer[0]
+            if removed:
+                self._ar_recent_active_count -= 1
+        self._ar_window_buffer.append(is_active)
+        if is_active:
+            self._ar_recent_active_count += 1
+
+        if input_level < self._ar_input_floor:
+            self._ar_suspect_count = 0
+            return
+
+        # Only suspect poisoning if model was recently producing output
+        if self._ar_recent_active_count == 0:
+            self._ar_suspect_count = 0
+            return
+
+        if ratio < self._ar_ratio_threshold:
+            self._ar_suspect_count += 1
+        else:
+            self._ar_suspect_count = 0
+            return
+
+        if self._ar_suspect_count >= self._ar_consecutive_required:
+            self._ar_suspect_count = 0
+            self._ar_cooldown_remaining = self._ar_cooldown_total
+            self._ar_reset_count += 1
+            self._reset_runtime_context()
+            print(f"[auto-reset] State poisoning detected – full reset #{self._ar_reset_count} triggered")
+
     def _reset_runtime_context(self) -> None:
         self.state = self.model.init_buffers(batch_size=1, device=self.device)
         self.input_accumulator = np.zeros((0, self.input_channels), dtype=np.float32)
@@ -263,6 +401,17 @@ class RealtimeInference:
         self._prefill_output_queue_with_silence()
         if self._spectral_sub_enabled:
             self._initialize_spectral_subtractor()
+        # Reset noise gate state
+        self._ng_envelope = 0.0
+        self._ng_gain = 0.0
+        self._ng_state = "closed"
+        self._ng_hold_counter = 0
+        self._ng_attack_counter = 0
+        self._ng_release_counter = 0
+        # Reset auto-reset activity tracking
+        self._ar_window_buffer.clear()
+        self._ar_recent_active_count = 0
+        self._ar_suspect_count = 0
 
     def _reset_name_detection_stream(self) -> None:
         if self._name_detection_event is not None:
@@ -284,6 +433,8 @@ class RealtimeInference:
         if command.kind == "set_embedding":
             self.embedding = self._make_embedding_tensor(command.payload)
             self._reset_runtime_context()
+            self._ar_suspect_count = 0
+            self._ar_cooldown_remaining = self._ar_cooldown_total
             return
 
         if command.kind != "set_passthrough":
@@ -305,6 +456,8 @@ class RealtimeInference:
                 self._reset_name_detection_stream()
 
         self._reset_runtime_context()
+        self._ar_suspect_count = 0
+        self._ar_cooldown_remaining = self._ar_cooldown_total
 
         if changed:
             self._play_transparency_sound_async()
@@ -468,6 +621,8 @@ class RealtimeInference:
         # --- Prep: numpy -> tensor ---
         t_prep = time.perf_counter()
         audio_chunk = _ensure_stereo(audio_chunk)  # normalise to [chunk_size, 2]
+        if self.input_gain != 1.0:
+            audio_chunk = audio_chunk * self.input_gain
         stereo_input = audio_chunk.T
         self._input_buffer.copy_(torch.from_numpy(stereo_input).unsqueeze(0))
 
@@ -514,8 +669,24 @@ class RealtimeInference:
         if self.output_channels == 1:
             output_audio = output_audio.mean(axis=1, keepdims=True)
 
+        # Capture pre-gate output level for auto-reset (before gate modifies it)
+        pre_gate_output_level = float(np.abs(output_audio).max())
+
+        # Noise gate: suppress interferer leakage when target is silent
+        if self._ng_enabled:
+            self._apply_noise_gate(output_audio)
+
+        # Auto-reset: uses pre-gate levels so gate doesn't cause false triggers
+        self._check_auto_reset(
+            float(np.abs(audio_chunk).max()),
+            pre_gate_output_level,
+        )
+
         output_audio = output_audio * self.output_gain
         output_audio = np.clip(output_audio, -1.0, 1.0)
+
+        with self.input_level_lock:
+            self.recent_output_level = np.abs(output_audio).max()
 
         t_done = time.perf_counter()
 
@@ -744,7 +915,20 @@ class RealtimeInference:
         rtf = avg_time / chunk_duration
         with self.input_level_lock:
             level = self.recent_input_level
+            out_level = self.recent_output_level
         level_db = float(20 * np.log10(level + 1e-10))
+        out_level_db = float(20 * np.log10(out_level + 1e-10))
+
+        # LSTM state norms as diagnostic for state poisoning
+        lstm_state_norms = {}
+        if self.state is not None and 'gridnet_bufs' in self.state:
+            for key in self.state['gridnet_bufs']:
+                buf = self.state['gridnet_bufs'][key]
+                if 'h0' in buf:
+                    lstm_state_norms[f"{key}_h0_norm"] = round(float(buf['h0'].norm().item()), 4)
+                if 'c0' in buf:
+                    lstm_state_norms[f"{key}_c0_norm"] = round(float(buf['c0'].norm().item()), 4)
+
         return {
             "type": "snapshot",
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -761,6 +945,10 @@ class RealtimeInference:
             "drops_output": self.drops_output,
             "underruns": self.underruns,
             "rms_db": round(level_db, 2),
+            "output_rms_db": round(out_level_db, 2),
+            "io_energy_ratio_db": round(out_level_db - level_db, 2),
+            "auto_resets": self._ar_reset_count,
+            **lstm_state_norms,
         }
 
     def _snapshot_thread_fn(self) -> None:
