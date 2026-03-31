@@ -19,7 +19,7 @@ def mod_pad(x, chunk_size, pad):
 
 class Net(nn.Module):
     def __init__(self, stft_chunk_size=160, stft_pad_size = 120, embed_dim=256,
-                 num_ch=2, D=64, B=6, I=1, J=1, L=0, H=128,
+                 num_ch=2, D=64, B=3, I=1, J=1, L=0, H=128,
                  use_attn=False, lookahead=True, local_atten_len=100,
                  chunk_causal=False, num_src = 2):
         super(Net, self).__init__()
