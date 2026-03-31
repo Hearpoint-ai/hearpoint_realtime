@@ -1,6 +1,9 @@
 .PHONY: eval-fast eval-live make-fixture enroll enroll-record demo tests list-devices wipe-data
 
-PYTHON ?= /opt/homebrew/anaconda3/envs/hearpoint-realtime/bin/python
+PYTHON ?= $(or \
+	$(wildcard /opt/homebrew/anaconda3/envs/hearpoint-realtime/bin/python), \
+	$(wildcard /opt/miniconda3/envs/hearpoint-realtime/bin/python), \
+	python3)
 NAME ?= User
 AUDIO ?= media/enrollments/sample.wav
 DURATION ?= 10
