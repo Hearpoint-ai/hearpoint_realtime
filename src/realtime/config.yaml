@@ -43,7 +43,7 @@ spectral_subtraction:
 
 auto_reset:
   enabled: true
-  input_floor: 0.015           # min input level to consider "active audio"
+  input_floor: 0.01           # min input level to consider "active audio"
   ratio_threshold: 0.15        # output/input below this = suspected poisoning
   consecutive_chunks: 50      # ~800ms sustained suppression before triggering
   cooldown_chunks: 250         # ~2s cooldown after reset
