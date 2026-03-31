@@ -12,7 +12,7 @@ audio:
   output_channels: 2       # e.g. 2 — null = auto-detect
   buffer_size_chunks: 4    # e.g. 4 — input buffer depth; higher = more stable, more latency
   output_gain: 3.0         # e.g. 1.0 — multiplier; 1.0 = unity, 2.0 = +6dB
-  input_gain: 4.0          # e.g. 1.0 — multiplier applied to input audio before model inference
+  input_gain: 1.0          # e.g. 1.0 — multiplier applied to input audio before model inference
 
 debug:
   verbose: false           # e.g. true — prints input/output stats per chunk
@@ -51,7 +51,7 @@ auto_reset:
   activity_threshold: 0.15     # output/input ratio above this = "model was active"
 
 noise_gate:
-  enabled: false
+  enabled: true
   energy_threshold: 0.01    # output peak below this → gate closes
   attack_chunks: 2           # ~16ms — ramp up to open
   hold_chunks: 50            # ~120ms — stay open between words
