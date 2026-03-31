@@ -100,7 +100,7 @@ class NameDetectionConfig:
 
     enabled: bool = False
     model_path: Path | None = None
-    target_word: str = "matthew"
+    target_word: str = "fire"
 
 
 @dataclass
@@ -267,7 +267,7 @@ class Config:
             name_detection=NameDetectionConfig(
                 enabled=name_detection_data.get("enabled", False),
                 model_path=nd_model_path,
-                target_word=name_detection_data.get("target_word", "matthew"),
+                target_word=name_detection_data.get("target_word", "fire"),
             ),
             logging=LoggingConfig(
                 enabled=logging_data.get("enabled", False),

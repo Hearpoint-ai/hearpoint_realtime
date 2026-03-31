@@ -27,7 +27,7 @@ optimization:
 name_detection:
   enabled: true            # e.g. true — listen for target word and toggle passthrough mode
   model_path: src/models/vosk-model-small-en-us-0.15  # e.g. "src/models/vosk-model-small-en-us-0.15" — Vosk model dir
-  target_word: toggle      # e.g. "derron" — spoken word that triggers toggle
+  target_word: fire        # e.g. "derron" — spoken word that triggers toggle
 
 enrollment:
   use_beamformer: false     # e.g. true — beamform binaural audio before embedding (beamformer_resemblyzer); false = plain resemblyzer

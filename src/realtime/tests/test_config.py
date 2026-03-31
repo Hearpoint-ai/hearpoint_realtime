@@ -29,6 +29,7 @@ class ConfigParsingTests(unittest.TestCase):
         cfg = Config._from_dict({})
         self.assertEqual(cfg.model.embedding_model, "resemblyzer")
         self.assertEqual(cfg.audio.output_gain, 1.0)
+        self.assertEqual(cfg.name_detection.target_word, "fire")
         self.assertEqual(
             cfg.name_detection.model_path,
             REPO_ROOT / "src/models/vosk-model-small-en-us-0.15",
