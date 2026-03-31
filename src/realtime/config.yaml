@@ -43,18 +43,18 @@ spectral_subtraction:
 
 auto_reset:
   enabled: true
-  input_floor: 0.01           # min input level to consider "active audio"
-  ratio_threshold: 0.1        # output/input below this = suspected poisoning
-  consecutive_chunks: 100      # ~800ms sustained suppression before triggering
+  input_floor: 0.015           # min input level to consider "active audio"
+  ratio_threshold: 0.15        # output/input below this = suspected poisoning
+  consecutive_chunks: 50      # ~800ms sustained suppression before triggering
   cooldown_chunks: 250         # ~2s cooldown after reset
   activity_window_chunks: 375  # ~3s lookback for recent output activity
   activity_threshold: 0.15     # output/input ratio above this = "model was active"
 
 noise_gate:
-  enabled: true
-  energy_threshold: 0.005    # output peak below this → gate closes
+  enabled: false
+  energy_threshold: 0.01    # output peak below this → gate closes
   attack_chunks: 2           # ~16ms — ramp up to open
-  hold_chunks: 15            # ~120ms — stay open between words
+  hold_chunks: 50            # ~120ms — stay open between words
   release_chunks: 10         # ~80ms — ramp down to closed
   smooth_coeff: 0.3          # envelope smoothing (0=instant, 1=frozen)
 
