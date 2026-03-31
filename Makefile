@@ -1,4 +1,4 @@
-.PHONY: eval-fast eval-live make-fixture enroll enroll-record demo tests list-devices wipe-data
+.PHONY: eval-fast eval-live make-fixture enroll enroll-record demo recording tests list-devices wipe-data
 
 PYTHON ?= $(or \
 	$(wildcard /opt/homebrew/anaconda3/envs/hearpoint-realtime/bin/python), \
@@ -36,6 +36,9 @@ enroll-record:
 
 demo:
 	$(PYTHON) scripts/demo.py
+
+recording:
+	$(PYTHON) scripts/demo.py --save-dir media/recordings
 
 tests:
 	$(PYTHON) -m unittest discover -s src/realtime/tests -v
