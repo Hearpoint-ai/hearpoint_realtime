@@ -643,9 +643,18 @@ def main():
         default=REPO_ROOT / "src" / "realtime" / "config.yaml",
         help="Path to config YAML",
     )
+    parser.add_argument(
+        "--save-dir",
+        type=Path,
+        default=None,
+        help="Directory to save debug_input.wav and debug_output.wav on exit",
+    )
     args = parser.parse_args()
 
     config = Config.from_yaml(args.config)
+    if args.save_dir is not None:
+        args.save_dir.mkdir(parents=True, exist_ok=True)
+        config.debug.save_dir = args.save_dir
     embedding_model_id = args.embedding_model or (
         "beamformer_resemblyzer" if config.enrollment.use_beamformer else "resemblyzer"
     )

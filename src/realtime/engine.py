@@ -54,7 +54,8 @@ class RealtimeInference:
         self.input_device = config.audio.input_device
         self.output_device = config.audio.output_device
         self.buffer_size_chunks = config.audio.buffer_size_chunks
-        self.output_gain = config.audio.output_gain
+        self.output_gain_passthrough = config.audio.output_gain_passthrough
+        self.output_gain_isolation   = config.audio.output_gain_isolation
         self.input_gain = config.audio.input_gain
 
         # Noise gate state
@@ -426,8 +427,12 @@ class RealtimeInference:
                 pass
 
     def _apply_control_command(self, command: ControlCommand) -> None:
-        if command.kind == "set_output_gain":
-            self.output_gain = float(command.payload)
+        if command.kind == "set_passthrough_gain":
+            self.output_gain_passthrough = float(command.payload)
+            return
+
+        if command.kind == "set_isolation_gain":
+            self.output_gain_isolation = float(command.payload)
             return
 
         if command.kind == "set_embedding":
@@ -595,7 +600,7 @@ class RealtimeInference:
                 output_audio = audio_chunk.mean(axis=1, keepdims=True)
             else:
                 output_audio = audio_chunk
-            output_audio = output_audio * self.output_gain
+            output_audio = output_audio * self.output_gain_passthrough
             output_audio = np.clip(output_audio, -1.0, 1.0)
             elapsed = time.perf_counter() - start_time
             self.processing_times.append(elapsed)
@@ -682,7 +687,7 @@ class RealtimeInference:
             pre_gate_output_level,
         )
 
-        output_audio = output_audio * self.output_gain
+        output_audio = output_audio * self.output_gain_isolation
         output_audio = np.clip(output_audio, -1.0, 1.0)
 
         with self.input_level_lock:
@@ -731,10 +736,16 @@ class RealtimeInference:
         """Toggle passthrough mode at runtime through the processing thread."""
         self._submit_control_command(ControlCommand(kind="set_passthrough", payload=enabled, manual=True))
 
+    @property
+    def output_gain(self) -> float:
+        """Returns the active output gain for the current mode."""
+        return self.output_gain_passthrough if self.passthrough_mode else self.output_gain_isolation
+
     def set_output_gain(self, gain: float) -> None:
-        """Adjust output gain at runtime. Clamped to [0.0, 10.0]."""
+        """Adjust output gain for the current mode at runtime. Clamped to [0.0, 10.0]."""
         gain = max(0.0, min(10.0, gain))
-        self._submit_control_command(ControlCommand(kind="set_output_gain", payload=gain))
+        kind = "set_passthrough_gain" if self.passthrough_mode else "set_isolation_gain"
+        self._submit_control_command(ControlCommand(kind=kind, payload=gain))
 
     def set_target_word(self, word: str) -> None:
         """Change the Vosk name-detection target word at runtime."""

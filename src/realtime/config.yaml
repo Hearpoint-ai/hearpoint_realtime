@@ -11,8 +11,9 @@ audio:
   input_channels: 2        # e.g. 2 — 1 for mono mic, 2 for stereo
   output_channels: 2       # e.g. 2 — null = auto-detect
   buffer_size_chunks: 4    # e.g. 4 — input buffer depth; higher = more stable, more latency
-  output_gain: 3.0         # e.g. 1.0 — multiplier; 1.0 = unity, 2.0 = +6dB
-  input_gain: 1.0          # e.g. 1.0 — multiplier applied to input audio before model inference
+  output_gain_passthrough: 1.0  # e.g. 1.0 — multiplier applied in passthrough mode; 1.0 = unity, 2.0 = +6dB
+  output_gain_isolation: 3.0    # e.g. 1.0 — multiplier applied in isolation mode; 1.0 = unity, 2.0 = +6dB
+  input_gain: 4.0          # e.g. 1.0 — multiplier applied to input audio before model inference
 
 debug:
   verbose: false           # e.g. true — prints input/output stats per chunk
@@ -73,12 +74,12 @@ test:
   generate_plots: true     # e.g. true — generate spectrogram, RTF distribution, SI-SDRi vs SNR plots (Requires embedding path to be si_sdr_fixture)
 
 controller:
-  1: prev_speaker            #top left
-  2: esc                     #top middle
-  3: enroll                  #top right
-  t: next_speaker            #bottom left
+  1: esc                     #top left
+  2: decrease_gain           #top middle
+  3: increase_gain           #top right
+  t: enroll                  #bottom left
   e: name                    #bottom middle
-  n: select                  #bottom right
-  7: decrease_gain           #knob left
-  8: toggle_passthrough      #knob button
-  9: increase_gain           #knob right 
+  n: toggle_passthrough      #bottom right
+  7: prev_speaker            #knob left
+  8: select                  #knob button
+  9: next_speaker            #knob right

@@ -58,7 +58,8 @@ class AudioConfig:
     input_channels: int = 2
     output_channels: int | None = 2
     buffer_size_chunks: int = 4
-    output_gain: float = 1.0  # linear multiplier applied to output audio
+    output_gain_passthrough: float = 1.0  # linear multiplier applied to output audio in passthrough mode
+    output_gain_isolation: float = 1.0    # linear multiplier applied to output audio in isolation mode
     input_gain: float = 1.0  # linear multiplier applied to input audio before model inference
 
 
@@ -241,7 +242,8 @@ class Config:
                 input_channels=audio_data.get("input_channels", 2),
                 output_channels=audio_data.get("output_channels", 2),
                 buffer_size_chunks=audio_data.get("buffer_size_chunks", 4),
-                output_gain=audio_data.get("output_gain", 1.0),
+                output_gain_passthrough=audio_data.get("output_gain_passthrough", 1.0),
+                output_gain_isolation=audio_data.get("output_gain_isolation", 1.0),
                 input_gain=audio_data.get("input_gain", 1.0),
             ),
             debug=DebugConfig(
