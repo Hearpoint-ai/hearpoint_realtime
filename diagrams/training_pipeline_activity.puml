@@ -1,0 +1,57 @@
+@startuml
+title training_pipeline_activity
+
+start
+:Parse launcher args;
+:Load ExperimentConfig JSON;
+:Resolve device and optional\ndistributed training context;
+:Build model from\ntraining/models;
+:Build train + val DataLoaders;
+if (enrollment training?) then (yes)
+  :Select EnrollmentTrainer\nwith cosine loss;
+else (no)
+  :Select ExtractionTrainer\nwith SI-SNR + SNR loss;
+endif
+:Build optimizer;
+:Init LR scheduler,\nrun_id, log dir,\nand checkpoint dir;
+:Persist config.json\nand init SummaryWriter;
+
+repeat
+  repeat
+    :Next train batch;
+    if (enrollment trainer?) then (yes)
+      :Run model on enrollments;\nCompute cosine embedding loss;
+    else (no)
+      :Run model on mixture + embedding;\nCompute SI-SNR + SNR loss;
+    endif
+    :Backward + optimizer step\n(with AMP if enabled);
+    :Step batch LR scheduler\nand log train scalars;
+  repeat while (train batches remain?)
+
+  if (validation epoch?) then (yes)
+    repeat
+      :Next val batch;
+      if (enrollment trainer?) then (yes)
+        :Run model on enrollments;\nCompute cosine val loss;
+      else (no)
+        :Run model on mixture + embedding;\nCompute SI-SNR + SNR val loss\nand optional metrics;
+      endif
+    repeat while (val batches remain?)
+    :Aggregate validation loss\n(and optional metrics);
+  else (no)
+    :Use +inf validation loss;
+  endif
+
+  :Step epoch LR scheduler;
+  :Save last.ckpt;
+  if (checkpoint interval reached?) then (yes)
+    :Save epoch_N.ckpt;
+  endif
+  if (validation improved?) then (yes)
+    :Save best.ckpt;
+  endif
+repeat while (epochs remain?)
+
+:Outputs: checkpoints,\nTensorBoard logs,\nand run config;
+stop
+@enduml
