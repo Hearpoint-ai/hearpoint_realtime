@@ -1,77 +1,77 @@
 # Real-time Inference Configuration
 
-embedding: media/si_sdr_fixture/enrollment.npy  # e.g. "/path/to/speaker.npy" — speaker enrollment file
-embedding_model: resemblyzer  # resemblyzer | tfgridnet — model used for enrollment and cosine eval
+embedding: media/si_sdr_fixture/enrollment.npy  # path to the enrolled speaker's embedding file
+embedding_model: resemblyzer  # model used to generate speaker embeddings
 
 audio:
-  sample_rate: 16000       # e.g. 16000 — Hz
-  chunk_size: 128          # e.g. 128 — samples per processing chunk
-  input_device: null       # e.g. 1 — device index (run --list-devices); null = system default
-  output_device: null      # e.g. 2 — device index; null = system default
-  input_channels: 2        # e.g. 2 — 1 for mono mic, 2 for stereo
-  output_channels: 2       # e.g. 2 — null = auto-detect
-  buffer_size_chunks: 4    # e.g. 4 — input buffer depth; higher = more stable, more latency
-  output_gain_passthrough: 1.0  # e.g. 1.0 — multiplier applied in passthrough mode; 1.0 = unity, 2.0 = +6dB
-  output_gain_isolation: 3.0    # e.g. 1.0 — multiplier applied in isolation mode; 1.0 = unity, 2.0 = +6dB
-  input_gain: 4.0          # e.g. 1.0 — multiplier applied to input audio before model inference
+  sample_rate: 16000       # audio sample rate in Hz; must match your mic
+  chunk_size: 128          # samples per processing chunk; lower = less latency, higher = more stable
+  input_device: null       # mic device index (run `make list-devices`); null = system default
+  output_device: null      # output device index; null = system default
+  input_channels: 2        # mic input channels; 1 = mono, 2 = stereo
+  output_channels: 2       # output channels; null = auto-detect
+  buffer_size_chunks: 4    # input buffer depth; higher = more stable but more latency
+  output_gain_passthrough: 1.0  # volume multiplier in passthrough mode; 1.0 = unity, 2.0 = +6dB
+  output_gain_isolation: 2.0    # volume multiplier in isolation mode; boost if speaker sounds quiet
+  input_gain: 2.0          # amplifies input before model inference; boost if mic signal is weak
 
 debug:
-  verbose: false           # e.g. true — prints input/output stats per chunk
-  passthrough: false       # e.g. true — bypasses model, passes audio through unchanged
-  save_dir: null           # e.g. "./debug_audio/" — saves debug_input.wav + debug_output.wav; null = disabled
+  verbose: false           # print input/output levels each chunk
+  passthrough: false       # skip the model entirely and pass audio through unchanged
+  save_dir: null           # save input/output as WAV files on exit; null = disabled
 
 optimization:
-  use_torch_compile: false        # e.g. true — wraps model in torch.compile(reduce-overhead); not recommended on MPS
-  use_coreml: true                # e.g. true — use pre-exported CoreML model for ANE acceleration
-  coreml_model_path: checkpoints/tfgridnet_streaming.mlpackage  # e.g. "checkpoints/tfgridnet_streaming.mlpackage"
+  use_torch_compile: false        # wrap model in torch.compile; may improve speed but not recommended on MPS
+  use_coreml: true                # use CoreML model for Apple Neural Engine acceleration; faster on Apple Silicon
+  coreml_model_path: checkpoints/tfgridnet_streaming.mlpackage  # path to the exported CoreML model package
 
 name_detection:
-  enabled: true            # e.g. true — listen for target word and toggle passthrough mode
-  model_path: src/models/vosk-model-small-en-us-0.15  # e.g. "src/models/vosk-model-small-en-us-0.15" — Vosk model dir
-  target_word: fire        # e.g. "derron" — spoken word that triggers toggle
+  enabled: true            # automatically toggle passthrough when the target word is detected
+  model_path: src/models/vosk-model-small-en-us-0.15  # path to the Vosk speech recognition model directory
+  target_word: fire        # spoken word that toggles passthrough mode
 
 enrollment:
-  use_beamformer: false     # e.g. true — beamform binaural audio before embedding (beamformer_resemblyzer); false = plain resemblyzer
+  use_beamformer: false     # beamform stereo mic before enrollment; improves embedding quality for binaural input
 
 spectral_subtraction:
-  enabled: true           # e.g. true — apply spectral subtraction after TFGridNet in isolation mode
-  noise_profile_path: media/noise_captures/noise.wav # e.g. "media/noise_captures/noise_capture.wav" — noise-only WAV used to estimate noise profile
-  sample_rate: 16000       # e.g. 16000 — resample noise profile to this rate for spectral subtraction
-  n_fft: 512               # e.g. 512 — STFT FFT size
-  hop_length: 128          # e.g. 128 — STFT hop size (set to chunk_size for realtime)
-  win_length: 512          # e.g. 512 — STFT window length
-  alpha: 0.95             # e.g. 0.95 — reserved for optional adaptive profile updates
+  enabled: true           # apply noise removal after the model in isolation mode
+  noise_profile_path: media/noise_captures/noise.wav # noise-only WAV used to build the subtraction profile
+  sample_rate: 16000       # resample noise profile to this rate before processing
+  n_fft: 512               # FFT size for spectral analysis; larger = finer frequency resolution
+  hop_length: 128          # STFT hop size; keep equal to chunk_size for realtime alignment
+  win_length: 512          # STFT window size; affects frequency/time resolution tradeoff
+  alpha: 0.95             # reserved for adaptive profile updates
 
 auto_reset:
   enabled: true
-  input_floor: 0.01           # min input level to consider "active audio"
-  ratio_threshold: 0.15        # output/input below this = suspected poisoning
-  consecutive_chunks: 50      # ~800ms sustained suppression before triggering
-  cooldown_chunks: 250         # ~2s cooldown after reset
-  activity_window_chunks: 375  # ~3s lookback for recent output activity
-  activity_threshold: 0.15     # output/input ratio above this = "model was active"
+  input_floor: 0.01           # minimum input level to consider audio "active"
+  ratio_threshold: 0.15        # output/input ratio below this triggers a reset; lower = more sensitive
+  consecutive_chunks: 50      # how many consecutive suppressed chunks before resetting (~800ms)
+  cooldown_chunks: 250         # chunks to wait before allowing another reset (~2s)
+  activity_window_chunks: 375  # lookback window for checking recent model activity (~3s)
+  activity_threshold: 0.15     # output/input ratio above this means the model was working; prevents false resets
 
 noise_gate:
   enabled: true
-  energy_threshold: 0.01    # output peak below this → gate closes
-  attack_chunks: 2           # ~16ms — ramp up to open
-  hold_chunks: 50            # ~120ms — stay open between words
-  release_chunks: 10         # ~80ms — ramp down to closed
-  smooth_coeff: 0.3          # envelope smoothing (0=instant, 1=frozen)
+  energy_threshold: 0.01    # output peak below this closes the gate; lower = more silence let through
+  attack_chunks: 2           # chunks to ramp up when gate opens; lower = faster response (~16ms)
+  hold_chunks: 50            # chunks to stay open between words; prevents choppy cutoffs (~120ms)
+  release_chunks: 10         # chunks to ramp down when gate closes (~80ms)
+  smooth_coeff: 0.3          # gate envelope smoothing; 0 = instant response, 1 = frozen
 
 logging:
-  enabled: false            # e.g. true — write per-second snapshots + session summary to JSONL
-  log_dir: logs/realtime   # e.g. "logs/realtime" — output directory for log files
+  enabled: false            # write per-second stats and session summary to JSONL
+  log_dir: logs/realtime   # directory where log files are saved
 
 test:
-  enabled: false           # e.g. true — process a file instead of live audio
-  input_file: media/si_sdr_fixture/mixture.wav        # e.g. "media/mixture.wav" — input audio file
-  output_dir: reports/eval/output_audio  # e.g. "reports/eval/output_audio" — directory for enhanced output WAV
-  reference_file: media/si_sdr_fixture/reference.wav  # e.g. "media/reference.wav" — clean ref for SI-SDR; null = skip
-  report_dir: reports/eval # e.g. "reports/eval" — timestamped JSON eval reports; null = disabled
-  threshold_profile: dev   # e.g. "dev" — profile from thresholds.yaml to check against; null = skip
-  warmup_chunks: 10        # e.g. 10 — chunks excluded from metric aggregation
-  generate_plots: true     # e.g. true — generate spectrogram, RTF distribution, SI-SDRi vs SNR plots (Requires embedding path to be si_sdr_fixture)
+  enabled: false           # run on a file instead of live audio
+  input_file: media/si_sdr_fixture/mixture.wav        # input WAV to process
+  output_dir: reports/eval/output_audio  # directory to save the enhanced output WAV
+  reference_file: media/si_sdr_fixture/reference.wav  # clean reference WAV for SI-SDR scoring; null = skip
+  report_dir: reports/eval # directory for timestamped eval reports; null = disabled
+  threshold_profile: dev   # which profile from thresholds.yaml to check against; null = skip
+  warmup_chunks: 10        # chunks excluded from metrics to avoid startup artifacts
+  generate_plots: true     # generate spectrogram and performance plots
 
 controller:
   1: esc                     #top left

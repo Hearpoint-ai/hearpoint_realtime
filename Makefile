@@ -34,7 +34,7 @@ enroll:
 enroll-record:
 	$(PYTHON) scripts/enroll.py --name "$(NAME)" --record --duration "$(DURATION)" $(if $(EMBEDDING_MODEL),--embedding-model "$(EMBEDDING_MODEL)",)
 
-demo:
+demo-test:
 	$(PYTHON) scripts/demo.py
 
 recording:

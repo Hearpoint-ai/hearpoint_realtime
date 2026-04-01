@@ -86,6 +86,7 @@ class RealtimeInference:
         self._ar_suspect_count = 0
         self._ar_cooldown_remaining = 0
         self._ar_reset_count = 0
+        self._name_detection_trigger_count = 0
         # Output activity tracking — only suspect poisoning if model was recently active
         self._ar_activity_threshold = config.auto_reset.activity_threshold
         self._ar_window_buffer: deque[bool] = deque(maxlen=config.auto_reset.activity_window_chunks)
@@ -487,6 +488,7 @@ class RealtimeInference:
         self._name_detection_event.clear()
         if not self.name_detection_armed or self.passthrough_mode:
             return
+        self._name_detection_trigger_count += 1
         self._apply_control_command(ControlCommand(kind="set_passthrough", payload=True, manual=False))
 
     def _load_model(
@@ -1213,15 +1215,17 @@ class RealtimeInference:
         try:
             import soundfile as sf
 
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
             if self.debug_inputs:
                 input_audio = np.concatenate(self.debug_inputs)
-                input_path = self.save_debug_dir / "debug_input.wav"
+                input_path = self.save_debug_dir / f"debug_input_{ts}.wav"
                 sf.write(str(input_path), input_audio, self.sample_rate)
                 print(f"Saved debug input: {input_path} ({len(input_audio) / self.sample_rate:.1f}s)")
 
             if self.debug_outputs:
                 output_audio = np.concatenate(self.debug_outputs)
-                output_path = self.save_debug_dir / "debug_output.wav"
+                output_path = self.save_debug_dir / f"debug_output_{ts}.wav"
                 sf.write(str(output_path), output_audio, self.sample_rate)
                 print(f"Saved debug output: {output_path} ({len(output_audio) / self.sample_rate:.1f}s)")
 

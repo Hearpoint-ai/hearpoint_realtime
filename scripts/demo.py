@@ -98,6 +98,8 @@ class DemoApp:
         self.status_message = "Ready"
         self.running = False
         self._last_ar_count = 0
+        self._last_trigger_count = 0
+        self._trigger_alert_until = 0.0
         self._show_gate_debug = False
         self._input_history: deque[float] = deque(maxlen=200)
         self._output_history: deque[float] = deque(maxlen=200)
@@ -175,7 +177,9 @@ class DemoApp:
         table.add_column("value", width=col_value)
         table.add_column("right", width=col_right, no_wrap=True)
 
-        if self.engine.passthrough_mode:
+        if time.time() < self._trigger_alert_until:
+            mode_text = Text("ALERT WORD DETECTED - TOGGLING PASSTHROUGH", style="bold yellow")
+        elif self.engine.passthrough_mode:
             mode_text = Text("PASSTHROUGH", style="bold green")
         else:
             mode_text = Text("ISOLATION", style="bold red")
@@ -601,6 +605,10 @@ class DemoApp:
                     if ar_count > self._last_ar_count:
                         self.status_message = f"[auto-reset] State reset #{ar_count} triggered"
                         self._last_ar_count = ar_count
+                    trigger_count = self.engine._name_detection_trigger_count
+                    if trigger_count > self._last_trigger_count:
+                        self._trigger_alert_until = time.time() + 3.0
+                        self._last_trigger_count = trigger_count
                     live.update(self._render())
         except KeyboardInterrupt:
             pass

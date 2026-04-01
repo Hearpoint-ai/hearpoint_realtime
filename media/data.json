@@ -1,19 +1,11 @@
 {
   "speakers": [
     {
-      "id": "5db67877-a2fe-4dd2-9efe-8e188056f213",
-      "name": "Speaker 23:46:46",
-      "created_at": "2026-03-31T03:46:46.395969+00:00",
-      "embedding_path": "enrollments/5db67877-a2fe-4dd2-9efe-8e188056f213.npy",
-      "enrollment_audio_path": "enrollments/5db67877-a2fe-4dd2-9efe-8e188056f213.wav",
-      "processing_ms": null
-    },
-    {
-      "id": "74e2666a-3a4a-4f95-8096-79e17cb0fa4c",
-      "name": "Speaker 13:24:21",
-      "created_at": "2026-03-31T17:24:21.409700+00:00",
-      "embedding_path": "enrollments/74e2666a-3a4a-4f95-8096-79e17cb0fa4c.npy",
-      "enrollment_audio_path": "enrollments/74e2666a-3a4a-4f95-8096-79e17cb0fa4c.wav",
+      "id": "9ea76857-3a54-4d76-9a46-de50dbaa783c",
+      "name": "Speaker 23:27:25",
+      "created_at": "2026-04-01T03:27:25.284018+00:00",
+      "embedding_path": "enrollments/9ea76857-3a54-4d76-9a46-de50dbaa783c.npy",
+      "enrollment_audio_path": "enrollments/9ea76857-3a54-4d76-9a46-de50dbaa783c.wav",
       "processing_ms": null
     }
   ],
