@@ -77,7 +77,7 @@ Runtime parameters:
 
 ### Prerequisites
 
-- macOS with Apple Silicon (M1/M2/M3)
+- macOS with Apple Silicon (M series)
 - [Conda](https://docs.conda.io/en/latest/miniconda.html)
 
 ### Setup
