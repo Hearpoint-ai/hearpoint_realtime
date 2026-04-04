@@ -195,23 +195,6 @@ Three layers stabilize the output beyond the neural model:
 
 ---
 
-## Engineering Pipeline
-
-<p align="center">
-  <img src="diagrams/eval_ci_pipeline.png" alt="Evaluation and CI Pipeline" width="100%"/>
-</p>
-
-The project includes CI-gated evaluation pipelines with threshold-based pass/fail checks to catch performance regressions on every push. Training runs are cloud-orchestrated with structured artifact storage (checkpoints, logs, configs).
-
-<details>
-<summary>Training pipeline detail</summary>
-<p align="center">
-  <img src="diagrams/training_pipeline_visual.png" alt="Training Pipeline Diagram" width="500"/>
-</p>
-</details>
-
----
-
 ## Enrollment Exploration
 
 Three enrollment approaches were investigated to improve robustness to noisy enrollment conditions. Each enrollment model (~1M parameters) was trained from scratch on 2x NVIDIA 4090 GPUs over approximately one week.
