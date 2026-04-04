@@ -47,7 +47,7 @@
 5. **Play back** — The cleaned signal is delivered to the headphones with low delay.
 
 <p align="center">
-  <img src="diagrams/realtime_flow.png" alt="Real-Time Audio Pipeline Flow" width="100%"/>
+  <img src="diagrams/realtime_flow.png" alt="Real-Time Audio Pipeline Flow" width="700"/>
 </p>
 
 ---
