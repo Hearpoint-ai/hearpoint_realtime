@@ -1,93 +1,228 @@
-# HearPoint Realtime
+# Hearpoint.ai
 
-Real-time target speech extraction using TFGridNet. Given a speaker embedding, the system isolates that speaker's voice from a binaural audio mixture in real-time, targeting hearing aid latency requirements (~40-50 ms).
+### Real-Time Selective Hearing for Target Speaker Isolation
 
-## Repository Structure
+[![Status](https://img.shields.io/badge/Status-Research%20Prototype-green?style=flat-square)](#results)
+[![Platform](https://img.shields.io/badge/Platform-Apple%20Silicon%20%2B%20CoreML-black?style=flat-square)](#architecture)
+[![Privacy](https://img.shields.io/badge/Inference-Fully%20Local-purple?style=flat-square)](#key-features)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
-```
-hearpoint_realtime/
-├── src/
-│   ├── ml/                        # ML model wrappers
-│   │   ├── interfaces.py          # Abstract base classes (SpeakerEmbeddingModel, TargetSpeechExtractionModel)
-│   │   ├── TFGridNetSpeakerEmbeddingModel.py   # Speaker enrollment embedding model
-│   │   ├── TFGridNetExtractionModel.py         # Offline target speech extraction
-│   │   ├── CleanedTfSpeakerEmbedding.py        # Experimental cleaned-up embedding model
-│   │   ├── ResemblyzerSpeakerEmbeddingModel.py # Resemblyzer-based embedding model
-│   │   ├── factory.py             # Embedding model registry/factory by stable ID
-│   │   ├── CopyMixtureExtractionModel.py       # Passthrough baseline extraction model
-│   │   ├── MockSpeakerEmbeddingModel.py        # Mock for testing
-│   │   └── binaural_synth.py      # Binaural audio synthesis utilities
-│   ├── models/                    # Neural network architectures
-│   │   ├── tfgridnet_realtime/    # Causal streaming TFGridNet (used for real-time inference)
-│   │   └── tfgridnet_enrollment/  # TFGridNet variant for computing speaker embeddings
-│   ├── realtime/                  # Real-time inference engine
-│   │   ├── realtime_inference.py  # Streaming audio capture, model inference, and playback
-│   │   ├── config.yaml            # Runtime configuration
-│   │   └── README.md              # Detailed real-time module documentation
-│   ├── persistence.py             # JSON-based data store for speakers/recordings
-│   └── utils.py                   # Shared utilities (device detection, filename sanitization)
-├── scripts/
-│   ├── enroll.py                  # CLI to enroll a speaker from audio file or mic recording
-│   └── extract.py                 # CLI to run offline target speech extraction on a mixture
-├── weights/                       # Model checkpoints (.ckpt files)
-├── media/                         # Audio files (enrollments, mixtures, extracted outputs)
-└── environment.yml                # Conda environment specification
-```
+> A wearable prototype that isolates a single enrolled speaker from a noisy, multi-speaker environment in real time. Rather than amplifying everything like a conventional hearing aid, Hearpoint.ai extracts **one chosen voice** — tackling the cocktail party problem at its core.
 
-## Setup
+<p align="center">
+  <img src="diagrams/hearpoint_poster.png" alt="HearPoint System Overview" width="100%"/>
+</p>
+
+---
+
+## Key Features
+
+- **Real-time speaker isolation** — Streaming extraction on live binaural audio, ~17 ms end-to-end latency.
+- **Speaker enrollment** — Record a short sample, generate a voice embedding, and lock onto that speaker.
+- **Fully local inference** — All processing runs on-device via CoreML. No cloud, no data leaves the machine.
+- **Passthrough mode** — Instant switch to unprocessed ambient audio when isolation isn't needed.
+- **Runtime self-healing** — Auto-reset, spectral subtraction, and energy gating keep the stream stable.
+- **Macro-pad + CLI control** — Physical controls for enrollment, speaker switching, gain, and mode toggling.
+
+---
+
+## How It Works
+
+1. **Enroll** — Record a short sample of the target speaker. A voice embedding is computed and saved.
+2. **Capture** — Binaural microphones on the headset pick up the full acoustic scene in stereo.
+3. **Extract** — A causal, streaming TFGridNet model isolates the enrolled speaker's voice in real time.
+4. **Clean up** — Spectral subtraction and noise gating remove residual artifacts.
+5. **Play back** — The cleaned signal is delivered to the headphones with low delay.
+
+<p align="center">
+  <img src="diagrams/demo_state_machine.png" alt="System State Machine" width="700"/>
+</p>
+
+---
+
+## Architecture
+
+The extraction model is a **streaming, causal TFGridNet** conditioned on a speaker embedding. The original offline TFGridNet was adapted for real-time use with:
+
+- Buffered convolution and deconvolution layers
+- Carried state in the inter-time RNN
+- Bounded-context multi-head attention
+
+Runtime parameters:
+- **16 kHz** stereo in / stereo out
+- **128-sample chunks** (~8 ms per chunk)
+- CoreML backend on Apple Silicon
+
+The prototype hardware: Sony WH-1000XM4 headphones with externally mounted binaural microphones on a custom 3D-printed mount, controlled via a macro-pad.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- macOS with Apple Silicon (M1/M2/M3)
+- [Conda](https://docs.conda.io/en/latest/miniconda.html)
+
+### Setup
 
 ```bash
+# Clone and create environment
+git clone git@github.com:Hearpoint-ai/hearpoint_realtime.git
+cd hearpoint_realtime
 conda env create -f environment.yml
 conda activate hearpoint-realtime
 ```
 
-Model checkpoints (`tfgridnet.ckpt` and `tfgridnet_enroll.ckpt`) should be placed in the `weights/` directory.
-
-## Usage
-
-### Enroll a Speaker
-
-Create a speaker embedding from an audio file or live recording:
+### Usage
 
 ```bash
-python scripts/enroll.py --name "Alice" --audio /path/to/recording.wav
-python scripts/enroll.py --name "Alice" --record --duration 5
-python scripts/enroll.py --name "Alice" --audio /path/to/recording.wav --embedding-model tfgridnet
+# List available audio devices
+make list-devices
+
+# Enroll a speaker by recording from microphone (5 seconds)
+make enroll-record NAME=Hady DURATION=5
+
+# Enroll from an existing WAV file
+make enroll NAME=Hady AUDIO=/path/to/sample.wav
+
+# Run the live demo
+make demo-test
+
+# Run with audio recording enabled
+make recording
+
+# Run evaluation
+make eval-fast
+
+# Run tests
+make tests
 ```
 
-Default embedding model is `resemblyzer`. Allowed IDs are `resemblyzer` and `tfgridnet`.
+---
 
-### Generate Eval Fixture
+## Results
 
-```bash
-python scripts/make_fixture.py \
-  --target data/our_speech_pool/Chris.wav \
-  --interferers data/our_speech_pool/Himanshu.wav \
-  --embedding-model resemblyzer
+### Performance
+
+| Metric | Value |
+|--------|-------|
+| CoreML isolation-mode RTF | 0.705 |
+| Average backend latency | 5.42 ms |
+| Mean session latency | ~17 ms |
+| p99 session latency | ~20 ms |
+
+### User Study Feedback
+
+| Category | Score |
+|----------|-------|
+| Ease of setup | 10.0 / 10 |
+| Noise reduction | 9.1 / 10 |
+| Naturalness | 8.3 / 10 |
+| Overall satisfaction | 7.1 / 10 |
+| Consistency | 4.8 / 10 |
+| Comfort | 3.3 / 10 |
+
+> Comfort and consistency scores reflect the bench-top prototype form factor and sensitivity to head movement — not fundamental model limitations.
+
+---
+
+## Audio Post-Processing
+
+Three layers stabilize the output beyond the neural model:
+
+- **Spectral subtraction** — A captured noise profile is subtracted in the frequency domain to reduce stationary background noise.
+- **Noise gate** — Energy-based gating suppresses low-level leakage when the target speaker pauses.
+- **Auto-reset** — When the output/input energy ratio stays abnormally low (e.g., head turns causing the target to fade), the streaming state is automatically reset.
+
+---
+
+## Engineering Pipeline
+
+<p align="center">
+  <img src="diagrams/eval_ci_pipeline.png" alt="Evaluation and CI Pipeline" width="100%"/>
+</p>
+
+The project includes CI-gated evaluation pipelines with threshold-based pass/fail checks to catch performance regressions on every push. Training runs are cloud-orchestrated with structured artifact storage (checkpoints, logs, configs).
+
+<details>
+<summary>Training pipeline detail</summary>
+<p align="center">
+  <img src="diagrams/training_pipeline_activity.png" alt="Training Pipeline Activity Diagram" width="500"/>
+</p>
+</details>
+
+---
+
+## Enrollment Exploration
+
+Three enrollment approaches were investigated:
+
+| Method | Outcome |
+|--------|---------|
+| **Resemblyzer** (baseline) | Best end-to-end extraction quality — used in final system |
+| Student-teacher distillation | Did not outperform Resemblyzer downstream |
+| Beamformer-assisted enrollment | Did not outperform Resemblyzer downstream |
+
+This was an important engineering result: the simplest approach won on end-to-end performance.
+
+---
+
+## Known Limitations
+
+- Bench-top wearable form factor (not miniaturized)
+- Enrollment degrades in noisy conditions
+- Performance drops when the target speaker moves relative to the listener's head
+- Low-level leakage during target speaker pauses
+- Limited safety/alert fallback validation
+- No calibrated SPL-limited output validation
+
+---
+
+## Repository Structure
+
+```text
+.
+├── src/
+│   ├── realtime/       # streaming inference engine, audio I/O, DSP
+│   ├── ml/             # training, evaluation, model definitions
+│   ├── models/         # model architecture code
+│   ├── configs/        # runtime and experiment configs
+│   └── tools/          # utilities
+├── scripts/            # demo, enrollment, evaluation, fixture generation
+├── diagrams/           # architecture diagrams and poster assets
+├── checkpoints/        # model weights
+├── weights/            # exported model artifacts
+├── data/               # speech pools and noise datasets
+├── media/              # enrollments, recordings, noise captures
+├── static/             # sound effects
+├── environment.yml     # conda environment spec
+└── Makefile            # all common commands
 ```
 
-### Offline Extraction
+---
 
-Extract a target speaker from a binaural mixture:
+## Team
 
-```bash
-python scripts/extract.py --audio /path/to/mixture.wav --speaker "Alice"
-python scripts/extract.py --audio /path/to/mixture.wav --speaker "Alice" --speaker "Bob"
+**Hearpoint.ai — Team 31**
+McMaster University — Capstone 2025–2026
+
+| Name | Program |
+|------|---------|
+| Hady Ibrahim | Software & Biomedical Engineering |
+| Himanshu Singh | Mechatronics Engineering |
+| Derron Li | Software & Biomedical Engineering |
+| Matthew Mark | Mechatronics Engineering |
+
+---
+
+## Citation
+
+```bibtex
+@misc{hearpointai2026,
+  title  = {Hearpoint.ai: Selective Hearing Aid for Target Speaker Isolation},
+  author = {Ibrahim, Hady and Singh, Himanshu and Li, Derron and Mark, Matthew},
+  year   = {2026},
+  note   = {McMaster University Capstone Project}
+}
 ```
-
-### Real-Time Inference
-
-Run streaming target speech extraction from a live microphone:
-
-```bash
-cd src/realtime
-python realtime_inference.py --list-devices          # find your audio device indices
-python realtime_inference.py                          # run with config.yaml settings
-python realtime_inference.py --embedding speaker.npy  # override embedding via CLI
-python realtime_inference.py --embedding-model tfgridnet
-python realtime_inference.py --test-file input.wav    # validate with a pre-recorded file
-```
-
-Configuration is managed via `src/realtime/config.yaml`. See [`src/realtime/README.md`](src/realtime/README.md) for full documentation on configuration, debugging, and performance tuning.
-
-Embedding sidecars are enforced in eval file mode. If the selected `embedding_model` does not match the enrollment sidecar, rerun enrollment/fixture generation with the same model ID.
