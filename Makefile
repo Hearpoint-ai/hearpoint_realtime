@@ -1,4 +1,4 @@
-.PHONY: eval-fast eval-live make-fixture enroll enroll-record demo recording tests list-devices wipe-data
+.PHONY: eval-fast eval-live make-fixture enroll enroll-record demo recording tests list-devices wipe-data animation
 
 PYTHON ?= $(or \
 	$(wildcard /opt/homebrew/anaconda3/envs/hearpoint-realtime/bin/python), \
@@ -50,3 +50,11 @@ wipe-data:
 	rm -f media/enrollments/*.wav media/enrollments/*.npy media/enrollments/*.meta.json
 	echo '{"speakers": [], "recordings": [], "extractions": []}' > media/data.json
 	@echo "Wiped all enrolled speakers and reset data.json."
+
+MANIMGL ?= $(dir $(PYTHON))manimgl
+
+# Render the HearPoint explainer animation (~5 min video).
+# Prerequisites: brew install ffmpeg cairo pkg-config && pip install manimgl
+# Output: media/videos/animation/<quality>/HearPointExplainer.mp4
+animation:
+	$(MANIMGL) docs/animation.py HearPointExplainer -o
