@@ -21,6 +21,7 @@ dependencies:
       - uvicorn
       - pysofaconventions
       - "espnet[all]"
+      - deepfilternet
       - sounddevice
       - vosk
       - coremltools
