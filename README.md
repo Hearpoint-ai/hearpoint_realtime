@@ -14,7 +14,7 @@
 > **This repo** contains the real-time inference system, live demo, and all evaluation/metrics for the live pipeline. Training and proof-of-concept work live in [`hearpoint_proof-of-concept`](https://github.com/Hearpoint-ai/proof-of-concept).
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/REPLACE_WITH_UPLOADED_VIDEO_ID" width="100%" controls></video>
+  <video src="https://github.com/user-attachments/assets/4f28a3eb-c2cc-43e7-961a-44c103c584f2" width="100%" controls></video>
 </p>
 
 <!-- To embed the demo video on GitHub:
