@@ -2,7 +2,7 @@
 
 ### Real-Time Selective Hearing for Target Speaker Isolation
 
-🏆 **Winner — McMaster Capstone Expo 2026**
+🏆 **Winner — McMaster iBioMed Capstone Expo 2026**
 
 [![Status](https://img.shields.io/badge/Status-Research%20Prototype-green?style=flat-square)](#results)
 [![Platform](https://img.shields.io/badge/Platform-Apple%20Silicon%20%2B%20CoreML-black?style=flat-square)](#architecture)
@@ -24,7 +24,7 @@
      4. Replace the video src above with that URL, then delete this comment block -->
 
 <p align="center">
-  <img src="diagrams/hearpoint_poster.png" alt="HearPoint System Overview" width="100%"/>
+  <img src="diagrams/Final - Hearpoint.ai Poster Board.png" alt="HearPoint System Overview" width="100%"/>
 </p>
 
 ---
